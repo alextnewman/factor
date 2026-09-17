@@ -22,7 +22,7 @@ named-pipe transport.
 
 ```powershell
 git clone https://github.com/alextnewman/factor.git
-cd factor\winagent32          # the repo root IS winagent32
+cd factor
 cargo build --bins
 ```
 
