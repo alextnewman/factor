@@ -56,6 +56,9 @@ Fetch new entries only from the publisher's official distribution
 python3 scripts/m4-battery/score.py    # markdown score table
 ```
 
+On Windows: `.\scripts\m4-battery\Run-M4Battery.ps1` — see `WINDOWS.md`
+(same battery, named-pipe sessions, CUDA `llama-server.exe`).
+
 Outputs land in `.state/m4-battery/` (gitignored): per-task fa32 logs,
 session DBs, `m4score` JSON, ground-truth check JSON. `m4score` is
 `crates/fa-core/src/bin/m4score.rs` — it re-parses logged model text with the

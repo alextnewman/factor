@@ -1,6 +1,9 @@
-//! Minimal JSON-RPC 2.0 over a Unix socket (Linux prototype).
+//! Minimal JSON-RPC 2.0 over a local session transport.
 //!
-//! Windows uses a named pipe with identical framing. Three shapes:
+//! Unix: a socket file (`session.sock` under the session dir).
+//! Windows: a named pipe `\\.\pipe\WinAgent32\<session-id>`.
+//!
+//! Identical newline-delimited framing on both. Three shapes:
 //! - request:    {"jsonrpc":"2.0","id":N,"method":"...","params":{...}}
 //! - response:   {"jsonrpc":"2.0","id":N,"result":...} (or "error")
 //! - notify:     {"jsonrpc":"2.0","method":"...","params":{...}} (no id)
@@ -18,18 +21,110 @@
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::path::Path;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, BufWriter};
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
-use tokio::net::{UnixListener, UnixStream};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::oneshot;
 
 use crate::{FaError, Result};
+
+/// Owned, type-erased stream halves. Unix and Windows expose different
+/// concrete stream types; the framing above them is identical.
+type BoxRead = Pin<Box<dyn AsyncRead + Send>>;
+type BoxWrite = Pin<Box<dyn AsyncWrite + Send>>;
+
+/// Session endpoint addressing, per platform.
+#[cfg(unix)]
+pub mod endpoint {
+    use super::{BoxRead, BoxWrite};
+    use crate::Result;
+    use std::path::{Path, PathBuf};
+    use tokio::net::{UnixListener, UnixStream};
+
+    pub struct Listener(UnixListener);
+
+    /// Socket file for a session.
+    pub fn path_for(state_dir: &Path, session_id: &str) -> PathBuf {
+        state_dir.join("sessions").join(session_id).join("session.sock")
+    }
+
+    pub async fn bind(path: &Path) -> Result<Listener> {
+        if path.exists() {
+            std::fs::remove_file(path)?;
+        }
+        Ok(Listener(UnixListener::bind(path)?))
+    }
+
+    pub async fn accept(listener: &Listener) -> Result<(BoxRead, BoxWrite)> {
+        let (stream, _) = listener.0.accept().await?;
+        let (rh, wh) = stream.into_split();
+        Ok((Box::pin(rh), Box::pin(wh)))
+    }
+
+    pub async fn connect(path: &Path) -> Result<(BoxRead, BoxWrite)> {
+        let stream = UnixStream::connect(path).await?;
+        let (rh, wh) = stream.into_split();
+        Ok((Box::pin(rh), Box::pin(wh)))
+    }
+
+    /// True if a live server answers at the endpoint right now.
+    pub async fn listening(path: &Path) -> bool {
+        path.exists() && UnixStream::connect(path).await.is_ok()
+    }
+}
+
+/// Session endpoint addressing, per platform.
+#[cfg(windows)]
+pub mod endpoint {
+    use super::{BoxRead, BoxWrite};
+    use crate::Result;
+    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+
+    pub struct Listener {
+        name: String,
+    }
+
+    /// `\\.\pipe\WinAgent32\<session-id>` — the locked pipe naming.
+    /// The id is sanitized: a pipe name must not contain path separators.
+    pub fn pipe_name(session_id: &str) -> String {
+        let safe: String = session_id
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .collect();
+        format!(r"\\.\pipe\WinAgent32\{safe}")
+    }
+
+    pub async fn bind(name: &str) -> Result<Listener> {
+        Ok(Listener {
+            name: name.to_string(),
+        })
+    }
+
+    pub async fn accept(listener: &Listener) -> Result<(BoxRead, BoxWrite)> {
+        // One pipe instance per accepted client, mirroring the Unix
+        // accept loop. `connect` waits for the client; `split` gives
+        // owned halves over the single bidirectional handle.
+        let server = ServerOptions::new().create(&listener.name)?;
+        server.connect().await?;
+        let (rh, wh) = tokio::io::split(server);
+        Ok((Box::pin(rh), Box::pin(wh)))
+    }
+
+    pub async fn connect(name: &str) -> Result<(BoxRead, BoxWrite)> {
+        let client = ClientOptions::new().open(name)?;
+        let (rh, wh) = tokio::io::split(client);
+        Ok((Box::pin(rh), Box::pin(wh)))
+    }
+
+    /// True if a server instance is accepting right now. Opening a pipe
+    /// with no listener fails immediately — no waiting involved.
+    pub async fn listening(name: &str) -> bool {
+        ClientOptions::new().open(name).is_ok()
+    }
+}
 
 /// Server-side handler: requests return a result; notifications are observed.
 pub trait RpcHandler: Send + Sync {
@@ -50,13 +145,13 @@ pub trait RpcHandler: Send + Sync {
 /// One side of a connection. Cloneable; the writer is shared.
 #[derive(Clone)]
 pub struct RpcPeer {
-    writer: Arc<tokio::sync::Mutex<BufWriter<OwnedWriteHalf>>>,
+    writer: Arc<tokio::sync::Mutex<BufWriter<BoxWrite>>>,
     next_id: Arc<AtomicU64>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<Value>>>>,
 }
 
 impl RpcPeer {
-    fn new(writer: OwnedWriteHalf) -> Self {
+    fn new(writer: BoxWrite) -> Self {
         Self {
             writer: Arc::new(tokio::sync::Mutex::new(BufWriter::new(writer))),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -105,7 +200,7 @@ impl RpcPeer {
     }
 }
 
-async fn read_loop<H: RpcHandler + 'static>(reader: OwnedReadHalf, peer: RpcPeer, handler: Arc<H>) {
+async fn read_loop<H: RpcHandler + 'static>(reader: BoxRead, peer: RpcPeer, handler: Arc<H>) {
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         if line.trim().is_empty() {
@@ -166,18 +261,25 @@ async fn read_loop<H: RpcHandler + 'static>(reader: OwnedReadHalf, peer: RpcPeer
 }
 
 pub struct RpcServer<H: RpcHandler> {
-    listener: UnixListener,
+    listener: endpoint::Listener,
     handler: Arc<H>,
 }
 
 impl<H: RpcHandler + 'static> RpcServer<H> {
-    pub async fn bind(path: &Path, handler: H) -> Result<Self> {
-        if path.exists() {
-            std::fs::remove_file(path)?;
-        }
-        let listener = UnixListener::bind(path)?;
+    /// Bind the session endpoint: socket path on Unix, pipe name on Windows.
+    #[cfg(unix)]
+    pub async fn bind(path: &std::path::Path, handler: H) -> Result<Self> {
         Ok(Self {
-            listener,
+            listener: endpoint::bind(path).await?,
+            handler: Arc::new(handler),
+        })
+    }
+
+    /// Bind the session endpoint: socket path on Unix, pipe name on Windows.
+    #[cfg(windows)]
+    pub async fn bind(pipe_name: &str, handler: H) -> Result<Self> {
+        Ok(Self {
+            listener: endpoint::bind(pipe_name).await?,
             handler: Arc::new(handler),
         })
     }
@@ -193,9 +295,8 @@ impl<H: RpcHandler + 'static> RpcServer<H> {
                 break;
             }
             tokio::select! {
-                res = self.listener.accept() => {
-                    let Ok((stream, _)) = res else { continue };
-                    let (rh, wh) = stream.into_split();
+                res = endpoint::accept(&self.listener) => {
+                    let Ok((rh, wh)) = res else { continue };
                     let peer = RpcPeer::new(wh);
                     let handler = self.handler.clone();
                     tokio::spawn(async move {
@@ -217,9 +318,19 @@ pub struct RpcClient<H: RpcHandler> {
 }
 
 impl<H: RpcHandler + 'static> RpcClient<H> {
-    pub async fn connect(path: &Path, handler: H) -> Result<Self> {
-        let stream = UnixStream::connect(path).await?;
-        let (rh, wh) = stream.into_split();
+    #[cfg(unix)]
+    pub async fn connect(path: &std::path::Path, handler: H) -> Result<Self> {
+        let (rh, wh) = endpoint::connect(path).await?;
+        Ok(Self::from_halves(rh, wh, handler))
+    }
+
+    #[cfg(windows)]
+    pub async fn connect(pipe_name: &str, handler: H) -> Result<Self> {
+        let (rh, wh) = endpoint::connect(pipe_name).await?;
+        Ok(Self::from_halves(rh, wh, handler))
+    }
+
+    fn from_halves(rh: BoxRead, wh: BoxWrite, handler: H) -> Self {
         let peer = RpcPeer::new(wh);
         let handler = Arc::new(handler);
         let peer2 = peer.clone();
@@ -227,10 +338,10 @@ impl<H: RpcHandler + 'static> RpcClient<H> {
         tokio::spawn(async move {
             read_loop(rh, peer2, handler2).await;
         });
-        Ok(Self {
+        Self {
             peer,
             _handler: handler,
-        })
+        }
     }
 
     pub fn peer(&self) -> &RpcPeer {

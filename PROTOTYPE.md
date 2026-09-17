@@ -124,6 +124,17 @@ tool-call validity and task completion.
 - **Done when**: results recorded with a recommendation — proceed local-first,
   or revise the model story before v1 design continues.
 
+### M5 — Windows transport (unblocks the native battery)
+The fa32↔factoragent session channel was Unix-socket-only. M5 ports it:
+named pipe `\\.\pipe\WinAgent32\<session-id>` on Windows, identical
+newline-delimited JSON-RPC framing, type-erased stream halves in `fa-core`.
+Session lock becomes an exclusive-share file handle (flock on Unix);
+the pwsh host gets its own process group via `CREATE_NEW_PROCESS_GROUP`
+and is reaped with `taskkill /T` (Job Object is the v1 hardening).
+`cargo check --target x86_64-pc-windows-gnu` is green; Linux tests still pass.
+- **Done when**: the M4 battery runs end-to-end on a real Windows machine
+  (GPU), via `scripts/m4-battery/Run-M4Battery.ps1` — see `WINDOWS.md`.
+
 ## 5. Definition of done (prototype)
 
 1. M0–M3 complete; the demo scenario runs on Windows with a local model.

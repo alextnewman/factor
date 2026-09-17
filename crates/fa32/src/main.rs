@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use fa_core::rpc::{RpcClient, RpcHandler, RpcPeer};
+use fa_core::rpc::{endpoint, RpcClient, RpcHandler, RpcPeer};
 use serde_json::{json, Value};
 
 #[derive(Parser)]
@@ -136,7 +136,7 @@ fn find_factoragent() -> Option<PathBuf> {
     // Same directory as this exe, else PATH.
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let cand = dir.join("factoragent");
+            let cand = dir.join(format!("factoragent{}", std::env::consts::EXE_SUFFIX));
             if cand.exists() {
                 return Some(cand);
             }
@@ -150,11 +150,15 @@ async fn run_session(opts: RunOpts) -> Result<()> {
     let session_id = opts.session_id.unwrap_or_else(uuid_simple);
     let session_dir = state_dir.join("sessions").join(&session_id);
     std::fs::create_dir_all(&session_dir)?;
-    let sock_path = session_dir.join("session.sock");
+    // Session endpoint: socket file on Unix, named pipe on Windows.
+    #[cfg(unix)]
+    let endpoint = endpoint::path_for(&state_dir, &session_id);
+    #[cfg(windows)]
+    let endpoint = endpoint::pipe_name(&session_id);
 
     // Spawn the server if nobody is listening.
     let mut server_child = None;
-    if !sock_path.exists() {
+    if !endpoint::listening(&endpoint).await {
         let factoragent = find_factoragent().context(
             "no session socket and no `factoragent` binary next to fa32 (nor --session-id of a live session)",
         )?;
@@ -194,11 +198,11 @@ async fn run_session(opts: RunOpts) -> Result<()> {
         );
         let child = cmd.spawn().context("spawn factoragent serve")?;
         server_child = Some(child);
-        wait_for_socket(&sock_path, Duration::from_secs(60)).await?;
+        wait_for_endpoint(&endpoint, Duration::from_secs(60)).await?;
     }
 
     let handler = ClientHandler;
-    let client = RpcClient::connect(&sock_path, handler).await?;
+    let client = RpcClient::connect(&endpoint, handler).await?;
     println!("session {session_id} — type /quit to exit\n");
 
     if let Some(msg) = opts.message {
@@ -218,18 +222,30 @@ async fn run_session(opts: RunOpts) -> Result<()> {
     Ok(())
 }
 
-async fn wait_for_socket(path: &Path, timeout: Duration) -> Result<()> {
+#[cfg(unix)]
+async fn wait_for_endpoint(path: &Path, timeout: Duration) -> Result<()> {
     let t0 = std::time::Instant::now();
     while t0.elapsed() < timeout {
-        if path.exists() {
-            // The file existing isn't quite "listening"; try a connect.
-            if tokio::net::UnixStream::connect(path).await.is_ok() {
-                return Ok(());
-            }
+        // `listening` both checks the socket file and tries a connect:
+        // the file existing isn't quite "listening".
+        if endpoint::listening(path).await {
+            return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(200)).await;
     }
     anyhow::bail!("timed out waiting for session socket {}", path.display())
+}
+
+#[cfg(windows)]
+async fn wait_for_endpoint(pipe: &str, timeout: Duration) -> Result<()> {
+    let t0 = std::time::Instant::now();
+    while t0.elapsed() < timeout {
+        if endpoint::listening(pipe).await {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    anyhow::bail!("timed out waiting for session pipe {pipe}")
 }
 
 async fn prompt_once(client: &RpcClient<ClientHandler>, text: &str) -> Result<String> {

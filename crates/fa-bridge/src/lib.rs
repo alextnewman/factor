@@ -1,13 +1,14 @@
 //! Async client for the FactorAgent pwsh host bridge.
 //!
 //! The bridge (`bridge.ps1`) speaks newline-delimited JSON-RPC 2.0 over
-//! stdio (a named pipe on Windows, same framing). This client spawns the
-//! host, issues calls, and owns shutdown/kill semantics.
+//! stdio on every platform. This client spawns the host, issues calls,
+//! and owns shutdown/kill semantics.
 //!
 //! Process-group note: the host is spawned in its own process group so that
 //! session shutdown reaps the whole tree (host + terminals it spawned).
-//! On Windows this becomes a Job Object; the `setpgid` call is the Unix
-//! spelling of the same idea.
+//! Unix spells that `setpgid`; Windows spells it CREATE_NEW_PROCESS_GROUP,
+//! and the prototype reaps the tree with `taskkill /T` (v1 hardening:
+//! a Job Object owned by the bridge).
 
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,7 +51,9 @@ pub struct HostBridge {
     stdin: BufWriter<ChildStdin>,
     stdout: BufReader<ChildStdout>,
     next_id: AtomicU64,
-    pgid: i32,
+    /// Unix: process group id (== child pid after setpgid).
+    /// Windows: child pid (== group id under CREATE_NEW_PROCESS_GROUP).
+    pid: u32,
 }
 
 impl HostBridge {
@@ -68,14 +71,21 @@ impl HostBridge {
             .env("FA_MAX_TERMINALS", env.max_terminals.to_string())
             .current_dir(&env.cwd);
         // Own process group: kill_tree() reaps host + terminals together.
+        #[cfg(unix)]
         unsafe {
             cmd.pre_exec(|| {
                 libc::setpgid(0, 0);
                 Ok(())
             });
         }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
+            cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+        }
         let mut child = cmd.spawn()?;
-        let pgid = child.id().ok_or(BridgeError::Closed)? as i32;
+        let pid = child.id().ok_or(BridgeError::Closed)?;
         let stdin = BufWriter::new(child.stdin.take().ok_or(BridgeError::Closed)?);
         let stdout = BufReader::new(child.stdout.take().ok_or(BridgeError::Closed)?);
         let mut bridge = Self {
@@ -83,7 +93,7 @@ impl HostBridge {
             stdin,
             stdout,
             next_id: AtomicU64::new(1),
-            pgid,
+            pid,
         };
         // Handshake doubles as the cold-start measurement and proves the
         // module imported cleanly.
@@ -138,11 +148,22 @@ impl HostBridge {
         Ok(())
     }
 
-    /// Kill the whole process group (host + terminals) and reap.
-    /// Best-effort: a vanished group is not an error.
+    /// Kill the whole process tree (host + terminals) and reap.
+    /// Best-effort: a vanished tree is not an error.
     pub async fn kill_tree(mut self) {
+        #[cfg(unix)]
         unsafe {
-            libc::killpg(self.pgid, libc::SIGKILL);
+            libc::killpg(self.pid as i32, libc::SIGKILL);
+        }
+        #[cfg(windows)]
+        {
+            // Prototype tree-kill via taskkill; v1 moves this to a Job Object.
+            let _ = std::process::Command::new("taskkill")
+                .args(["/PID", &self.pid.to_string(), "/T", "/F"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
         }
         let _ = self.child.wait().await;
     }

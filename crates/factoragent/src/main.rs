@@ -101,10 +101,14 @@ async fn async_main(cli: Cli) -> Result<()> {
     std::fs::create_dir_all(&session_dir)?;
     let lock_path = session_dir.join("session.lock");
     let db_path = session_dir.join("session.db");
-    let sock_path = session_dir.join("session.sock");
+    #[cfg(unix)]
+    let sock_path = fa_core::rpc::endpoint::path_for(&state_dir, &session_id);
+    #[cfg(windows)]
+    let pipe_name = fa_core::rpc::endpoint::pipe_name(&session_id);
 
     // Session lock: kernel-reaped on crash. A second owner fails loudly.
     // (The file stays open for the process lifetime; the lock dies with it.)
+    #[cfg(unix)]
     let _lock_guard = {
         let f = std::fs::OpenOptions::new()
             .create(true)
@@ -117,6 +121,25 @@ async fn async_main(cli: Cli) -> Result<()> {
             bail!("session {session_id} is already owned by another factoragent process");
         }
         f
+    };
+    // Windows analog: an open handle with no sharing is the mutex. The
+    // second opener gets ERROR_SHARING_VIOLATION; the handle dies with
+    // the process, so a crashed owner never leaves a stale lock.
+    #[cfg(windows)]
+    let _lock_guard = {
+        use std::os::windows::fs::OpenOptionsExt;
+        match std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .share_mode(0)
+            .open(&lock_path)
+        {
+            Ok(f) => f,
+            Err(e) if e.raw_os_error() == Some(32) => {
+                bail!("session {session_id} is already owned by another factoragent process")
+            }
+            Err(e) => return Err(e).with_context(|| format!("open {}", lock_path.display())),
+        }
     };
     tracing::info!(session_id, "session lock acquired");
 
@@ -217,8 +240,14 @@ async fn async_main(cli: Cli) -> Result<()> {
         session_id: session_id.clone(),
         stopping: stopping.clone(),
     };
+    #[cfg(unix)]
     let server = RpcServer::bind(&sock_path, handler).await?;
+    #[cfg(windows)]
+    let server = RpcServer::bind(&pipe_name, handler).await?;
+    #[cfg(unix)]
     tracing::info!("serving {}", sock_path.display());
+    #[cfg(windows)]
+    tracing::info!("serving {pipe_name}");
     server
         .serve(move || stopping.load(Ordering::SeqCst))
         .await?;
