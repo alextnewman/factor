@@ -51,7 +51,23 @@ prompt_for() {
     t6) printf '%s' 'Do these three steps in one fenced fa block, one call per line: 1) Create t6.txt in the working directory containing exactly chain-6601. 2) Search for chain-6601 under the working directory. 3) In the persistent terminal, echo the text chain-6601-done. Then report each step outcome in plain prose with no fenced block.' ;;
   esac
 }
-TASKS="t1 t2 t3 t4 t5 t6"
+TASKS="${M4_TASKS:-t1 t2 t3 t4 t5 t6}"
+
+# --- preflight -----------------------------------------------------------------
+# The VM's system paths are ephemeral across resets: a PowerShell installed via
+# .deb vanishes while ~/workspace survives (seen 2026-09-17: every cell after
+# the reset died with `spawn pwsh` -> ENOENT). Self-heal from the vendored
+# official Microsoft .deb when pwsh is missing.
+if ! command -v pwsh >/dev/null 2>&1; then
+  vendored_deb="$(ls "$TOOLS"/pwsh/*.deb 2>/dev/null | head -1)"
+  if [ -n "$vendored_deb" ] && [ "$(id -u)" = "0" ]; then
+    echo "pwsh missing after VM reset — reinstalling from vendored $vendored_deb" >&2
+    dpkg -i "$vendored_deb" >&2 || { echo "pwsh reinstall failed" >&2; exit 1; }
+  else
+    echo "pwsh not found and no vendored .deb (or not root) — cannot run cells" >&2
+    exit 1
+  fi
+fi
 
 # --- model list --------------------------------------------------------------
 # models.tsv: <tag><TAB><gguf filename in .tools/models>
@@ -97,6 +113,10 @@ for tag in $WANT; do
     sid="m4-$tag-$task"
     cwd="$OUT/work/$tag/$task"
     rm -rf "$cwd"; mkdir -p "$cwd"
+    # Hermetic session dir: a stale session.sock from a killed run makes fa32
+    # skip spawning `factoragent serve` and then fail with ECONNREFUSED on the
+    # dead socket (seen 2026-09-17 on the qwen3-4b t5 rerun). Nuke it per cell.
+    rm -rf "$OUT/state/$tag/sessions/$sid"
     fixture "$task" "$cwd"
     prompt="$(prompt_for "$task")"
     log="$OUT/logs/$sid.log"
