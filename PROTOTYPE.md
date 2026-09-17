@@ -155,8 +155,59 @@ compaction · multi-backend.
 - M0 round-trip latency (p50/p99, Windows hardware):
 - M0 `pwsh` cold-start cost:
 - M0 kill reliability (kills / attempts):
-- M4 model battery (model, tasks passed, tool-call validity %):
-- M4 recommendation:
+- M4 model battery (model, tasks passed, tool-call validity %): qwen3-4b 4/4 measured cells PASS, 100% first-try validity;
+  smollm2-1.7b + qwen3-1.7b NO DATA (infrastructure failure, not model failure); verdict PARTIAL — details below.
+- M4 recommendation: PARTIAL — 4B class clears the harness bar on the 4 measured tasks; local-first stands as the
+  working hypothesis for 4B. No claim on 1.7B-class or on t5/t6 until the 14 failed cells re-run clean (see below).
+
+### M4 results — 2026-09-17 (Linux, llama.cpp b11011 CPU) — verdict PARTIAL
+
+Battery: 3 models × 6 tasks via `scripts/m4-battery/run.sh`
+(`--auto-approve --error-mode heal --turn-cap 6`); completion verified against
+ground truth on disk (`check.py`), protocol validity from the session DB
+(`m4score`). The orchestrator ran the full chain 08:22–08:54 PDT; the deadline
+(11:15 PDT) passed with no live processes, so the battery is declared done/dead.
+
+| model | task | completed | 1st-try valid | turns | approvals | tool errs |
+|---|---|---|---|---|---|---|
+| qwen3-4b | t1 (file create) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-4b | t2 (search) | PASS | 100% (1/1) | 2 | 0 | 0 |
+| qwen3-4b | t3 (edit line) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-4b | t4 (terminal persist) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-4b | t5 (error recovery) | NO DATA | infra: LLM connection refused | — | — | — |
+| qwen3-4b | t6 (3-step chain) | NO DATA | infra: LLM connection refused | — | — | — |
+| smollm2-1.7b | t1–t6 | NO DATA ×6 | infra: session-socket spawn failure | — | — | — |
+| qwen3-1.7b | t1–t6 | NO DATA ×6 | infra: session-socket spawn failure | — | — | — |
+
+qwen3-4b: 4/4 measured tasks PASS | first-try validity 100% (4/4) |
+post-warning validity n/a (no warnings issued) | warning recovery n/a
+smollm2-1.7b: 0/6 — no model data
+qwen3-1.7b: 0/6 — no model data
+
+**Missing data (14 cells, explicitly):** qwen3-4b t5 + t6 (each run failed with
+`Error: io: Connection refused` — the `fa32 run` LLM backend never connected to
+llama-server; the model produced zero output), and all 6 tasks each for
+smollm2-1.7b and qwen3-1.7b (each failed with `Error: io: No such file or
+directory` + `timed out waiting for session socket` — the session subprocess
+never spawned; zero model turns). These cells hold zero-stub score files
+(`turns_used: 0, total_calls: 0`) — they are infrastructure failures, **not**
+model failures. The failures started after qwen3-4b t4 passed at ~08:27 PDT.
+
+**M4 recommendation (PARTIAL, calibrated per the user's steer):** judged as a
+harness+model system, the 4B class clears the bar on what was measured — fenced
+`Call as` JSON on the first try in all 4 cells, zero parser warnings, approvals
+engaged where Write-FAFile demanded them, ground-truth-verified task
+completion. Local-first stands as the working hypothesis **for the 4B class**.
+The floor the user asked to name: 1.7B-class models have produced **no data at
+all** — the battery says nothing about whether they clear protocol validity
+even with parser warnings and heal-and-continue. Before v1 design continues on
+the model story: (1) fix the session-socket spawn / LLM-connect flakiness in
+`fa32 run` (the chain went 4/4 green then died every cell for the rest of the
+morning — nothing in the battery design is worth measuring until the harness
+survives its own orchestration), (2) re-run the 14 missing cells, (3) then
+confirm t5 (error recovery) and t6 (multi-step chain) for 4B and the full
+matrix for the two 1.7B models. Do not claim sub-4B support in v1 until the
+re-run lands.
 
 ### M0 results — 2026-09-16 (Linux, pwsh 7.6.6, stdio framing)
 
