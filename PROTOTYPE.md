@@ -238,3 +238,59 @@ writes stay serialized via the writer mutex. Regression test
 `rpc_request_survives_notification_roundtrip` fails (10 s timeout) on the
 old code and passes on the new. Approve/deny/edit over the socket get
 their full end-to-end workout in M3 with the live model.
+
+### M3 results — 2026-09-17 (Linux, pwsh 7.6.6, live llama.cpp + Qwen3-4B)
+
+End-to-end through `fa32 run` -> Unix socket -> `factoragent serve` ->
+llama.cpp (`b11011`, `0.4.1-dev`, commit `aa39d7a3e`) serving
+`Qwen/Qwen3-4B-GGUF/Qwen3-4B-Q4_K_M.gguf` (2,497,280,256 bytes, GGUF magic
+verified), thinking disabled, `max_tokens: 1024`, temperature `0.2`,
+`cache_prompt: true`. One scenario, one approval chain, piped `a`:
+
+> write `live-demo.txt` (two lines, `marker-4271` on line 2) -> Find-FAText
+> the marker -> persistent terminal: set state, read it back -> prose report.
+
+- **Turn 1**: 2396 prompt + 88 completion tokens (**249 cached**), 185.8 s
+  wall, 163.5 s server prompt-eval. The model emitted a 4-call fenced chain
+  in valid JSON on the first try (after the prompt fixes below).
+- **Approval**: exactly **1** chain; previews rendered
+  (`New-FATerminal`, `Write-FAFile`, `Invoke-FACommand`; the read-only
+  `Find-FAText` needed none); operator approved.
+- **Execution**: `New-FATerminal` 532 ms, `Write-FAFile` 18 ms,
+  `Find-FAText` 42 ms, `Invoke-FACommand` 159 ms — all `ok: true`.
+- **Turn 2**: 2876 prompt + 102 completion (**2356 cached**), 75.7 s wall,
+  46.3 s server prompt-eval — KV-cache reuse cut prompt-eval ~3.5x.
+- **Session record**: 2 turns, 4 tool.call/tool.result pairs, append-only
+  `events` table; terminal `default` persisted in `terminals`.
+- **File on disk**: `live-demo.txt` = `FIRST LINE\nmarker-4271`, exactly as
+  the model wrote it; Find-FAText found the marker.
+
+**Prompt engineering, earned the hard way** (see DESIGN.md decision log
+2026-09-17):
+
+- *Attempt 1–2*: the model wrote PowerShell syntax (`-Path foo`) instead of
+  JSON args, twice, and did not self-correct from the "invalid JSON"
+  warning. Root cause: Block A was *full* of PowerShell (cmdlet names,
+  `-Param` help, PS `.EXAMPLE` snippets) and showed JSON only twice.
+- *Fix*: every tool now renders a synthesized `Call as: call <Name>
+  {"Req": "..."}` line (required params only) directly under its heading —
+  10 JSON shapes to imitate. Plus an explicit anti-example in the preamble
+  (`-Path notes.txt` is WRONG) and a targeted parser warning when args look
+  like `-Param value` syntax.
+- *Attempt 3*: valid JSON on the first try — but the model filled an
+  invented `ProgressAction` string. Root cause: the manifest reflected the
+  PS **common parameter** `ProgressAction` (missing from the `$skip` list),
+  typed as free string. Fixed by adding it to `$skip`; `ActionPreference`
+  is harness territory, not agent vocabulary.
+- *Attempt 4 (this run)*: clean 4-call chain, first try.
+
+**Model fidelity notes** (M4-relevant, not harness bugs): the model merged
+the two terminal commands into one (`$env:demo='terminal-alive'; $env:demo`
+— so cross-*command* persistence wasn't strictly re-proven live, though M1
+Pester already proves it) and dropped "second line" from the file content.
+A 4B model drives the protocol reliably *once the prompt teaches JSON*,
+but its instruction fidelity is loose — the M4 battery should measure this.
+
+Gates at commit: Pester 39/39, `cargo test --workspace` all green,
+`cargo fmt --check` clean, `cargo clippy --workspace --all-targets`
+`-D warnings` clean.

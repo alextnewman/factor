@@ -90,7 +90,20 @@ pub fn parse_tool_calls(text: &str) -> (Vec<ToolCall>, Vec<String>) {
             Ok(_) => warnings.push(format!(
                 "line {line_no}: args for `{name}` must be a JSON object"
             )),
-            Err(e) => warnings.push(format!("line {line_no}: invalid JSON for `{name}`: {e}")),
+            Err(e) => {
+                // A model reaching for PowerShell syntax gets a targeted
+                // correction, not just serde's complaint.
+                let hint = if json.trim_start().starts_with('-') {
+                    " — that looks like PowerShell `-Param value` syntax, which is not \
+                     accepted here; use a JSON object instead, e.g. \
+                     `call Write-FAFile {\"Path\": \"f.txt\", \"Content\": \"hi\"}`"
+                } else {
+                    ""
+                };
+                warnings.push(format!(
+                    "line {line_no}: invalid JSON for `{name}`: {e}{hint}"
+                ));
+            }
         }
     }
     if in_block {

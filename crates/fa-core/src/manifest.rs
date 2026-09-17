@@ -55,6 +55,14 @@ pub fn render_tools(schemas: &[ToolSchema]) -> String {
     sorted.sort_by(|a, b| a.name.cmp(&b.name));
     for t in sorted {
         out.push_str(&format!("### {}\n{}\n", t.name, t.synopsis));
+        // One canonical JSON call shape per tool, placed before the
+        // PowerShell examples: the model imitates what it sees most, and
+        // without this it reaches for `-Param value` syntax.
+        out.push_str(&format!(
+            "Call as: call {} {}\n",
+            t.name,
+            json_call_shape(t)
+        ));
         if !t.description.is_empty() {
             out.push_str(&format!("{}\n", t.description));
         }
@@ -88,6 +96,32 @@ pub fn render_tools(schemas: &[ToolSchema]) -> String {
     out
 }
 
+/// Synthesize a canonical `{"Param": placeholder, ...}` JSON object for a
+/// tool from its reflected schema, so Block A teaches the call shape.
+/// Required params only: the model fills optional slots from the parameter
+/// list when it needs them, and a minimal shape leaves less room for
+/// invented arguments.
+fn json_call_shape(t: &ToolSchema) -> String {
+    let mut pairs = Vec::new();
+    for p in &t.parameters {
+        if !p.required {
+            continue;
+        }
+        let ph = if let Some(vals) = &p.r#enum {
+            format!("\"{}\"", vals.first().map(String::as_str).unwrap_or("..."))
+        } else {
+            match p.ty.as_str() {
+                "boolean" => "true".to_string(),
+                "integer" => "0".to_string(),
+                "array(string)" => "[\"...\"]".to_string(),
+                _ => "\"...\"".to_string(),
+            }
+        };
+        pairs.push(format!("\"{}\": {ph}", p.name));
+    }
+    format!("{{{}}}", pairs.join(", "))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -114,5 +148,14 @@ mod tests {
         assert!(rendered.contains("### Read-FAFile"));
         assert!(rendered.contains("- Path (string, required)"));
         assert!(rendered.contains("- Lines (integer)"));
+    }
+
+    #[test]
+    fn call_shape_uses_required_params_only() {
+        let schemas = load_manifest(SAMPLE).unwrap();
+        let rendered = render_tools(&schemas);
+        // Required-only: the optional Lines param must not appear in the
+        // synthesized call line, so the model isn't tempted to fill it.
+        assert!(rendered.contains(r#"Call as: call Read-FAFile {"Path": "..."}"#));
     }
 }

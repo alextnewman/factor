@@ -17,7 +17,7 @@ function Get-FAToolManifest {
     param()
     $skip = @('Verbose', 'Debug', 'ErrorAction', 'WarningAction', 'InformationAction',
         'ErrorVariable', 'WarningVariable', 'InformationVariable', 'OutVariable',
-        'OutBuffer', 'PipelineVariable', 'WhatIf', 'Confirm')
+        'OutBuffer', 'PipelineVariable', 'ProgressAction', 'WhatIf', 'Confirm')
     $tools = foreach ($cmd in (Get-Command -Module FactorAgent -CommandType Function |
             Where-Object { $_.Name -like '*-FA*' -and $_.Name -ne 'Get-FAToolManifest' } |
             Sort-Object Name)) {

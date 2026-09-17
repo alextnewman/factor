@@ -47,6 +47,8 @@ call Read-FAFile {\"Path\": \"notes.txt\"}
 call Find-FAText {\"Pattern\": \"TODO\", \"Path\": \".\"}
 ```
 - Arguments are a single JSON object. Quote every string.
+- NEVER PowerShell-style arguments: `-Path notes.txt` is WRONG here.
+  The harness only accepts JSON, e.g. `call Read-FAFile {\"Path\": \"notes.txt\"}`.
 - Only call tools listed below. Never invent tool names or parameters.
 - After tool results arrive, either call more tools or give your final \
 answer as plain text (no fence).
