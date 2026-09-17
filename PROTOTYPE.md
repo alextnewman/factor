@@ -166,10 +166,14 @@ compaction · multi-backend.
 - M0 round-trip latency (p50/p99, Windows hardware):
 - M0 `pwsh` cold-start cost:
 - M0 kill reliability (kills / attempts):
-- M4 model battery (model, tasks passed, tool-call validity %): qwen3-4b 4/4 measured cells PASS, 100% first-try validity;
-  smollm2-1.7b + qwen3-1.7b NO DATA (infrastructure failure, not model failure); verdict PARTIAL — details below.
-- M4 recommendation: PARTIAL — 4B class clears the harness bar on the 4 measured tasks; local-first stands as the
-  working hypothesis for 4B. No claim on 1.7B-class or on t5/t6 until the 14 failed cells re-run clean (see below).
+- M4 model battery (model, tasks passed, tool-call validity %): qwen3-4b 6/6 PASS, 100% first-try validity
+  (full matrix, incl. t5 error-recovery via heal-and-continue); qwen3-1.7b 3/6 — protocol nearly clean
+  (96% first-try validity) but task-strategy failures; smollm2-1.7b NO DATA ×6 — the re-run died on a NEW
+  infrastructure failure (hermetic session-dir paths exceed Unix SUN_LEN, session socket never spawns);
+  verdict PARTIAL — details below.
+- M4 recommendation: PARTIAL — 4B class clears the full 6-task harness bar; local-first stands as the
+  working hypothesis for 4B. 1.7B class (qwen3): clears the protocol (96% first-try validity), fails at task
+  strategy (3/6). No claim on smollm2-1.7b until its 6 cells run without the SUN_LEN harness bug (see below).
 
 ### M4 results — 2026-09-17 (Linux, llama.cpp b11011 CPU) — verdict PARTIAL
 
@@ -219,6 +223,71 @@ survives its own orchestration), (2) re-run the 14 missing cells, (3) then
 confirm t5 (error recovery) and t6 (multi-step chain) for 4B and the full
 matrix for the two 1.7B models. Do not claim sub-4B support in v1 until the
 re-run lands.
+
+### M4 re-run — 2026-09-17 ~11:45–12:05 PDT (Linux, llama.cpp CPU) — verdict PARTIAL
+
+The 14 missing cells were re-launched after the harness repair (commit
+238ec10: pwsh self-heal preflight, hermetic session dirs). 12/18 cells now
+hold real score files. At 15:00 PDT no llama-server or runner processes were
+alive and no log had fresh activity since 12:05 PDT — the battery is declared
+dead; the re-run did not complete.
+
+| model | task | completed | 1st-try valid | turns | approvals | tool errs |
+|---|---|---|---|---|---|---|
+| qwen3-4b | t1 (file create) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-4b | t2 (search) | PASS | 100% (1/1) | 2 | 0 | 0 |
+| qwen3-4b | t3 (edit line) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-4b | t4 (terminal persist) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-4b | t5 (error recovery) | PASS | 100% (1/1) | 2 | 0 | 1 |
+| qwen3-4b | t6 (3-step chain) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| smollm2-1.7b | t1–t6 | NO DATA ×6 | infra: session.sock path > SUN_LEN | — | — | — |
+| qwen3-1.7b | t1 (file create) | PASS | 100% (6/6) | 6 | 1 | 0 |
+| qwen3-1.7b | t2 (search) | FAIL | 100% (6/6) | 6 | 0 | 3 |
+| qwen3-1.7b | t3 (edit line) | PASS | 100% (1/1) | 2 | 1 | 0 |
+| qwen3-1.7b | t4 (terminal persist) | PASS | 100% (6/6) | 6 | 6 | 14 |
+| qwen3-1.7b | t5 (error recovery) | FAIL | 100% (6/6) | 6 | 0 | 1 |
+| qwen3-1.7b | t6 (3-step chain) | FAIL | 67% (2/3) | 3 | 2 | 0 |
+
+qwen3-4b: 6/6 PASS | first-try validity 100% (6/6) | post-warning validity n/a
+(no warnings issued) | warning recovery n/a
+smollm2-1.7b: 0/6 — no model data (infrastructure)
+qwen3-1.7b: 3/6 | first-try validity 96% (27/28) | post-warning validity n/a
+(0/0) | warning recovery 0% (0/1)
+
+Notes on the qwen3-4b t5 cell: the single tool error was absorbed and the
+cell still passed — heal-and-continue working as designed. The 1.7B-class
+result is real model signal: protocol validity is nearly clean (96%
+first-try, exactly one parser warning across 18 tasks — and that warning
+came on the final line of t6, with 0 recoveries), but completion is 3/6.
+The failures are task-strategy failures, not protocol failures: t2 found the
+search target but named the wrong file in its final text; t5 ran a bogus
+Find-FAText instead of verifying the ghost file it was asked about; t6 did
+the on-disk work (`t6.txt` correct) but never reported the steps. The floor
+the user asked to name: **a 1.7B-class model clears the tool protocol with
+imitation lines + parser warnings, but cannot reliably complete tasks —
+3/6 on ground-truth completion, with one non-recovered protocol warning.**
+The bar for the local-first model story is the 4B class.
+
+**Missing data (6 cells, explicitly):** smollm2-1.7b t1–t6. All six died
+with `Error: io: path must be shorter than SUN_LEN` followed by `timed out
+waiting for session socket .../state/smollm2-1.7b/sessions/
+m4-smollm2-1.7b-t6/session.sock` — the hermetic session dirs from the
+238ec10 repair lengthened the socket path past the 108-byte Unix limit (the
+full path is ~110 chars), so the harness never spawned; zero model turns.
+New harness bug, **not** a model failure. Before a third attempt: shorten or
+hash session dir names (or anchor them under a short TMPDIR) so the socket
+path stays well under SUN_LEN.
+
+**M4 recommendation (PARTIAL, calibrated per the user's steer):** judged as
+a harness+model system, qwen3-4b clears the full 6-task bar — fenced `Call
+as` JSON on the first try in every cell, zero parser warnings, approvals
+engaged where Write-FAFile demanded them, t5's tool error healed and the
+cell still passed. Local-first stands as the working hypothesis **for the
+4B class**. qwen3-1.7b shows protocol compliance is not enough — it emits
+valid calls and still fails half the tasks. v1's model story: 4B-class and
+up; do not claim 1.7B support. And before any third run: fix the SUN_LEN
+session-dir bug, then run smollm2-1.7b's 6 cells clean so the 1.7B-class
+claim rests on two models, not one.
 
 ### M0 results — 2026-09-16 (Linux, pwsh 7.6.6, stdio framing)
 
