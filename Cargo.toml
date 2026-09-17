@@ -1,7 +1,24 @@
 [workspace]
-members = ["crates/fa-bridge"]
+members = [
+    "crates/fa-bridge",
+    "crates/fa-core",
+    "crates/factoragent",
+    "crates/fa32",
+]
 resolver = "2"
 
 [workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled"] }
+# Platform TLS (locked decision): native-tls (SChannel on Windows, OpenSSL here).
+# Never rustls in this workspace.
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+clap = { version = "4", features = ["derive"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
+uuid = { version = "1", features = ["v4"] }

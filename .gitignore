@@ -1,0 +1,6 @@
+# Build outputs. Everything else is source.
+target/
+# Local tool downloads (llama.cpp server, models) — fetched, not committed.
+.tools/
+# Session state when running the prototype locally.
+.state/

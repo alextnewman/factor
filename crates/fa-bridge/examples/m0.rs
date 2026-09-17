@@ -112,7 +112,12 @@ fn main() -> std::io::Result<()> {
 
     // Kill reliability: a hung pwsh must die promptly on kill().
     let mut sleeper = Command::new("pwsh")
-        .args(["-NoProfile", "-NonInteractive", "-Command", "Start-Sleep 300"])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            "Start-Sleep 300",
+        ])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()?;
@@ -120,7 +125,10 @@ fn main() -> std::io::Result<()> {
     let t = Instant::now();
     sleeper.kill()?;
     let status = sleeper.wait()?;
-    println!("kill: reaped {:?} after signal (status: {status})", t.elapsed());
+    println!(
+        "kill: reaped {:?} after signal (status: {status})",
+        t.elapsed()
+    );
     assert!(!status.success());
 
     println!("M0: all green");

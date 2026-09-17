@@ -103,14 +103,19 @@ text-protocol parsing, turn cap, `$FAErrorAction`, approval-request data model.
   except approvals.
 
 ### M3 — Client + model
-**Owner: the user, on their own Windows hardware** (llama.cpp server + local
-model live there; M0–M2 are built here).
+**Owner: the agent, in this Linux environment** (2026-09-16: the user
+authorized building all the way through the live llama.cpp test here,
+iterating independently). The Windows end-to-end demo still runs on the
+user's hardware afterward.
 `fa32` console client: chat rendering, approval UX, WhatIf display.
 llama.cpp HTTP backend wired in.
-- **Done when**: end-to-end demo scenario runs against a real local model
-  (8B-class): user asks for a file created, text found, and a command run in
-  a persistent terminal — completed within the turn cap with at most one
-  approval chain.
+- **Done when**: end-to-end demo scenario runs against a real local model:
+  user asks for a file created, text found, and a command run in a
+  persistent terminal — completed within the turn cap with at most one
+  approval chain. Model choice is hardware-driven: this environment has
+  2 CPUs and ~7 GiB RAM, so the provisional model is **Qwen3-4B-Q4_K_M**
+  (2.5 GB, official `Qwen/Qwen3-4B-GGUF` repo) rather than 8B-class; the
+  8B question belongs to M4's battery on real hardware.
 
 ### M4 — Spike: can a small model drive it?
 The actual risk. A fixed task battery (file ops, search, multi-step terminal
@@ -171,3 +176,65 @@ persistent-terminal decision exists precisely because of it — to be measured
 on real Windows hardware). Framing validated over stdio; Windows will use a
 named pipe with identical newline-delimited JSON-RPC framing. Per-call
 overhead (~0.8 ms) is negligible next to model latency.
+
+### M1 results — 2026-09-17 (Linux, pwsh 7.6.6, real bridge)
+
+Ten cmdlets, all real, all Pester-covered (`psmodule/FactorAgent`, 39/39
+Pester green), driven end-to-end from Rust (`crates/factoragent/tests/
+m1_bridge.rs`, 1/1):
+
+- **Host cold start** (spawn -> first response, module import incl. all 10
+  cmdlets): **644 ms** (M0 was 512 ms; the module grew up)
+- **Manifest reflection**: bridge reflects exactly **10 agent tools** from
+  comment-based help (synopsis, typed parameters, examples)
+- **File round-trip**: Write-FAFile -> Find-FAText (1 hit) -> Read-FAFile
+  numbered lines — all shapes asserted on the Rust side
+- **Terminal round-trip**: New-FATerminal -> Invoke-FACommand ->
+  cross-command state persistence (`$M1Probe` survives) -> Remove-FATerminal;
+  lazy default terminal; unknown-terminal and duplicate-name errors are loud
+- **WhatIf**: `_WhatIf` previews without touching disk/processes; result
+  shape carries `Preview`
+- **Error propagation**: tool errors surface as JSON-RPC errors;
+  non-`FA` methods refused
+
+Two protocol bugs found and fixed by real-pwsh testing (see DESIGN.md
+decision log 2026-09-17):
+
+- **Scalar unwrap**: single-hit Find-FAText / one-line Read-FAFile returned a
+  bare object instead of an array. Collection cmdlets now emit via
+  `Write-Output -NoEnumerate` — wire shapes are count-independent.
+- **WhatIf framing corruption**: the engine's `What if:` line is written by
+  the console host straight to stdout, bypassing every stream. `_WhatIf`
+  calls now set a module-scope `$script:FAForceWhatIf` flag and invoke
+  *without* `-WhatIf`; cmdlets short-circuit to their Preview object.
+  Human `-WhatIf`/`-Confirm` behavior unchanged.
+
+### M2 results — 2026-09-17 (Linux, pwsh 7.6.6, mock backend)
+
+Agent loop against the mock backend (`crates/factoragent/tests/m2_loop.rs`,
+5/5) plus unit tests (`cargo test -p fa-core`, 7/7) and an RPC regression
+test (1/1):
+
+- **Happy path**: 3-turn mock script (write file -> find text -> report)
+  completes; append-only event log records `turn.started`/`tool.result`
+- **Approval deny**: `Err(FaError::Denied)`; denied write never touches disk
+- **Approval edit**: operator-rewritten args executed; file contains the
+  edited content
+- **StopAndReport**: tool failure aborts with `Err(FaError::ToolFailed)`
+  carrying the real tool name + message (per §4.6 "real error surfaces")
+- **HealAndContinue**: failure fed back as a user message; mock self-corrects
+  and the loop completes in 2 turns; failed result logged with `ok=false`
+- **Parser** (unit): fenced `fa` blocks parsed; prose outside fences ignored;
+  malformed lines become warnings, never panics (fuzz corpus)
+- **Prompt blocks** (unit): Block A/B order stable and deterministic
+- **Session store** (unit): append-only events, `scope_kv` precedence
+
+**RPC approval deadlock — found and fixed.** The server read loop awaited
+`on_request` inline; `session.prompt` blocks on the client's
+`event.approval_resolved` notification, which the stuck read loop could
+never read: deadlock on any approval over the socket. The read loop now
+dispatches every request/notification as an independent task; response
+writes stay serialized via the writer mutex. Regression test
+`rpc_request_survives_notification_roundtrip` fails (10 s timeout) on the
+old code and passes on the new. Approve/deny/edit over the socket get
+their full end-to-end workout in M3 with the live model.
