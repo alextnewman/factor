@@ -1,0 +1,27 @@
+[package]
+name = "factoragent"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+clap = { workspace = true }
+anyhow = "1"
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+libc = { workspace = true }
+uuid = { workspace = true }
+fa-bridge = { path = "../fa-bridge" }
+fa-core = { path = "../fa-core" }
+
+[[bin]]
+name = "factoragent"
+path = "src/main.rs"
+
+[dev-dependencies]
+tokio = { workspace = true }
+serde_json = { workspace = true }
+fa-bridge = { path = "../fa-bridge" }
