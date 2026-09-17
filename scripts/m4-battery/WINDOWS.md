@@ -37,8 +37,10 @@ This produces `target\debug\fa32.exe`, `target\debug\factoragent.exe`, and
 2. Download **both**
    - `llama-b<N>-bin-win-cuda-<X.Y>-x64.zip` (the binaries), and
    - `cudart-llama-bin-win-cuda-<X.Y>-x64.zip` (CUDA runtime DLLs),
-   
-   where `<X.Y>` is **not higher** than the CUDA version `nvidia-smi` reports.
+   where `<X.Y>` is no higher than your `nvidia-smi` CUDA version.
+   - Intel GPU (SYCL): grab `llama-b<N>-bin-win-sycl-x64.zip` instead —
+     no cudart zip needed. `--n-gpu-layers 999` works the same on the SYCL
+     backend.
 3. Extract **both** zips into `.tools\llamacpp\` inside the repo, so that
    `.tools\llamacpp\llama-server.exe` exists alongside its DLLs.
 
