@@ -119,15 +119,30 @@ impl Executor {
             return Ok(Vec::new());
         }
         let mut calls: Vec<ToolCall> = calls.to_vec();
+        let needs = calls.iter().any(|c| Self::needs_approval(&c.name));
 
-        if !self.auto_approve && calls.iter().any(|c| Self::needs_approval(&c.name)) {
+        if needs && self.auto_approve {
+            // Auto-approval is still an approval decision: log it so the
+            // audit trail (and the M4 battery) can count chains hit.
+            self.log(
+                "approval.resolved",
+                &serde_json::json!({"decision": "auto-approve", "calls": calls.len()}),
+            )?;
+        }
+
+        if !self.auto_approve && needs {
             let previews = self.preview_chain(&calls).await;
             let req = ApprovalRequest {
                 chain: calls.clone(),
                 previews,
             };
             match self.approver.decide(&req).await? {
-                ApprovalDecision::Approve => {}
+                ApprovalDecision::Approve => {
+                    self.log(
+                        "approval.resolved",
+                        &serde_json::json!({"decision": "approve", "calls": calls.len()}),
+                    )?;
+                }
                 ApprovalDecision::Deny => {
                     self.log(
                         "approval.resolved",

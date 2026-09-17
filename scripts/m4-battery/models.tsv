@@ -1,0 +1,5 @@
+# <tag><TAB><gguf filename in .tools/models>
+# Fetch only from the publisher's official distribution.
+qwen3-4b	Qwen3-4B-Q4_K_M.gguf
+smollm2-1.7b	smollm2-1.7b-instruct-q4_k_m.gguf
+qwen3-1.7b	Qwen3-1.7B-Q8_0.gguf

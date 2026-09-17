@@ -61,6 +61,9 @@ enum Cmd {
         error_mode: String,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Max agent turns per prompt (prototype default 25).
+        #[arg(long, default_value_t = 25)]
+        turn_cap: usize,
     },
 }
 
@@ -90,6 +93,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         auto_approve,
         error_mode,
         cwd,
+        turn_cap,
     } = cli.cmd;
 
     let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -193,7 +197,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         scope_notes: db.scope_all(&session_id)?,
         terminals: vec![],
     };
-    let agent = Arc::new(tokio::sync::Mutex::new(AgentLoop::new(
+    let mut agent_loop = AgentLoop::new(
         backend,
         model,
         executor,
@@ -201,7 +205,9 @@ async fn async_main(cli: Cli) -> Result<()> {
         session_id.clone(),
         block_a,
         facts,
-    )));
+    );
+    agent_loop.set_turn_cap(turn_cap);
+    let agent = Arc::new(tokio::sync::Mutex::new(agent_loop));
 
     let stopping = Arc::new(AtomicBool::new(false));
     let handler = SessionHandler {

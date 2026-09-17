@@ -44,6 +44,9 @@ enum Cmd {
         auto_approve: bool,
         #[arg(long, default_value = "stop")]
         error_mode: String,
+        /// Max agent turns per prompt (prototype default 25).
+        #[arg(long, default_value_t = 25)]
+        turn_cap: usize,
         /// Single prompt; print the outcome and exit (no REPL).
         #[arg(long)]
         message: Option<String>,
@@ -80,6 +83,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             model,
             auto_approve,
             error_mode,
+            turn_cap,
             message,
             cwd,
         } => {
@@ -92,6 +96,7 @@ async fn async_main(cli: Cli) -> Result<()> {
                 model,
                 auto_approve,
                 error_mode,
+                turn_cap,
                 message,
                 cwd,
             })
@@ -114,6 +119,7 @@ struct RunOpts {
     model: String,
     auto_approve: bool,
     error_mode: String,
+    turn_cap: usize,
     message: Option<String>,
     cwd: Option<PathBuf>,
 }
@@ -173,7 +179,9 @@ async fn run_session(opts: RunOpts) -> Result<()> {
             .arg("--model")
             .arg(&opts.model)
             .arg("--error-mode")
-            .arg(&opts.error_mode);
+            .arg(&opts.error_mode)
+            .arg("--turn-cap")
+            .arg(opts.turn_cap.to_string());
         if opts.auto_approve {
             cmd.arg("--auto-approve");
         }

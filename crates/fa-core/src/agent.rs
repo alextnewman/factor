@@ -76,6 +76,12 @@ impl AgentLoop {
         &self.history
     }
 
+    /// Override the turn cap (prototype default is TURN_CAP).
+    /// The M4 battery lowers this so a spiraling model can't burn an hour.
+    pub fn set_turn_cap(&mut self, cap: usize) {
+        self.turn_cap = cap.max(1);
+    }
+
     fn log(&self, typ: &str, payload: &serde_json::Value) -> Result<()> {
         self.db.append_event(&self.session_id, typ, payload)?;
         Ok(())
