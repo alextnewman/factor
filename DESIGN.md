@@ -699,6 +699,13 @@ decorators a home, so nothing is repeated memetically.
   One bounded reprocessing event; Block A's KV stays hot across it. No silent
   middle-truncation.
 
+### 8.5 Platform TLS — [DECIDED]
+
+- `reqwest` with `default-features = false`, features `json` + `native-tls`.
+  **Never rustls.** On Windows this is SChannel against the platform trust store,
+  so corporate proxies and enterprise CAs just work; let Microsoft replace
+  SChannel at its own pace. Locked in `Cargo.toml`.
+
 ## 9. Windows distribution: WinAgent32
 
 ### 9.1 Packaging — [DECIDED]
