@@ -614,6 +614,20 @@ Engine obligations (some already true, some future work):
 Open: the operator's role in game terms (spectator? DM?) — the true client's
 central design question.
 
+**Context contract** — what "enough context" means, per event, so the deeper
+visualization stays possible without a wire change later:
+
+- actor — have (`caused_by`)
+- action — have (tool name + arguments)
+- room — NEED: explicit directory scope the call acted in (future work)
+- target — have (the item addressed, identified rather than buried in args)
+- outcome — have (tool result: success/failure + compact summary)
+- order — have (`seq`; the log's total order is the shared timeline)
+
+The world graph itself is reconstructed from survey/INDEX events already in
+the log — no new event type yet. A normal UI remains fine; this contract
+only guarantees the deeper view is never priced out of the wire.
+
 ## 7. Security model
 
 ### 7.1 MXC sandboxing — [DECIDED]
