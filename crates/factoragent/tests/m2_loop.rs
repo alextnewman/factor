@@ -349,3 +349,111 @@ async fn m2_heal_and_continue_feeds_error_back() {
     h.finish();
     eprintln!("M2 heal-and-continue: PASS");
 }
+
+#[tokio::test]
+async fn m2_denial_reaches_model_context() {
+    // A denied chain must not leave the model guessing: the denial enters
+    // the model's context in-band, stating plainly that NOTHING ran.
+    let Some((h, bridge)) = Harness::new("deny-ctx").await else {
+        return;
+    };
+    let target = h.work.join("denied.txt");
+    let script = vec![
+        format!(
+            "```fa\ncall Write-FAFile {{\"Path\": \"{}\", \"Content\": \"nope\"}}\n```",
+            target.to_string_lossy()
+        ),
+        "understood, nothing ran".to_string(),
+    ];
+    let backend = Arc::new(MockBackend::new(script));
+    let approver: ApproverRef = Arc::new(ScriptApprover::new(vec![ApprovalDecision::Deny]));
+    let executor = Executor::new(
+        bridge,
+        h.db.clone(),
+        h.session_id.clone(),
+        approver,
+        false,
+        ErrorMode::StopAndReport,
+    );
+    let mut agent = AgentLoop::new(
+        backend.clone(),
+        "mock".into(),
+        executor,
+        h.db.clone(),
+        h.session_id.clone(),
+        h.block_a.clone(),
+        h.facts(),
+    );
+    let err = agent
+        .run_prompt("write it", &silent)
+        .await
+        .expect_err("denied chain must fail the loop");
+    assert!(
+        err.to_string().contains("denied") || format!("{err:?}").contains("Denied"),
+        "unexpected error: {err:?}"
+    );
+    assert!(!target.exists(), "denied write must not touch the disk");
+    // Second turn: the model must SEE the denial in its own context, so it
+    // cannot mistake the missing tool result for a completed execution.
+    agent
+        .run_prompt("report", &silent)
+        .await
+        .expect("turn after denial must run");
+    let seen = backend.seen_messages();
+    assert!(seen.len() >= 2, "model should have been consulted twice");
+    let ctx = seen[1]
+        .iter()
+        .map(|m| m.content.clone())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        ctx.contains("approval denied"),
+        "denial note missing from model context:\n{ctx}"
+    );
+    assert!(
+        ctx.contains("None of the tool calls"),
+        "atomicity note missing from model context:\n{ctx}"
+    );
+    h.finish();
+}
+
+#[tokio::test]
+async fn m2_edit_on_multicall_chain_fails_closed() {
+    // "Edit" is only meaningful for single-call chains. If a client ever
+    // sends it for a multi-call chain, the server must fail closed (deny),
+    // never silently approve the original args.
+    let Some((h, bridge)) = Harness::new("edit-closed").await else {
+        return;
+    };
+    let t1 = h.work.join("e1.txt");
+    let t2 = h.work.join("e2.txt");
+    let script = vec![format!(
+        "```fa\ncall Write-FAFile {{\"Path\": \"{}\", \"Content\": \"a\"}}\ncall Write-FAFile {{\"Path\": \"{}\", \"Content\": \"b\"}}\n```",
+        t1.to_string_lossy(),
+        t2.to_string_lossy()
+    )];
+    let mut edit_args = Map::new();
+    edit_args.insert("Path".into(), json!("edited.txt"));
+    let approver: ApproverRef =
+        Arc::new(ScriptApprover::new(vec![ApprovalDecision::Edit(edit_args)]));
+    let mut agent = h.agent(
+        MockBackend::new(script),
+        bridge,
+        approver,
+        false,
+        ErrorMode::StopAndReport,
+    );
+    let err = agent
+        .run_prompt("write both", &silent)
+        .await
+        .expect_err("edit on multi-call chain must fail closed");
+    assert!(
+        format!("{err:?}").contains("Denied"),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        !t1.exists() && !t2.exists(),
+        "failed-closed chain must touch nothing on disk"
+    );
+    h.finish();
+}

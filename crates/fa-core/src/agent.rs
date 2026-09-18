@@ -190,6 +190,17 @@ impl AgentLoop {
                     // the chain as an error; the frontend reports it and the
                     // operator decides what happens next. (The executor
                     // already logged approval.resolved=denied.)
+                    //
+                    // The denial MUST also enter the model's context in-band:
+                    // otherwise the next turn finds a tool call with no result
+                    // and the model has to guess whether anything ran. Denial
+                    // is atomic -- zero stages executed -- so say exactly that.
+                    self.history.push(ChatMessage::user(
+                        "system: approval denied by operator. None of the tool \
+                         calls in this chain were executed; none of their \
+                         effects happened. You may retry with different calls, \
+                         ask the operator what they want, or stop.",
+                    ));
                     return Err(FaError::Denied);
                 }
                 Err(e) => return Err(e),

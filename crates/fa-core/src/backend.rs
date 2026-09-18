@@ -41,12 +41,14 @@ pub trait LlmBackend: Send + Sync {
 /// Scripted backend for tests and demos: pops one response per call.
 pub struct MockBackend {
     script: Mutex<VecDeque<String>>,
+    seen: Mutex<Vec<Vec<ChatMessage>>>,
 }
 
 impl MockBackend {
     pub fn new(responses: Vec<String>) -> Self {
         Self {
             script: Mutex::new(responses.into()),
+            seen: Mutex::new(Vec::new()),
         }
     }
 
@@ -54,15 +56,23 @@ impl MockBackend {
     pub fn remaining(&self) -> usize {
         self.script.lock().unwrap().len()
     }
+
+    /// Every message list the model was ever shown, in call order. Tests
+    /// use this to assert on the model's context (e.g. that a denial note
+    /// actually reached it) rather than on harness internals.
+    pub fn seen_messages(&self) -> Vec<Vec<ChatMessage>> {
+        self.seen.lock().unwrap().clone()
+    }
 }
 
 impl LlmBackend for MockBackend {
     fn complete<'a>(
         &'a self,
         _model: &'a str,
-        _messages: &'a [ChatMessage],
+        messages: &'a [ChatMessage],
     ) -> Pin<Box<dyn Future<Output = Result<ChatResponse>> + Send + 'a>> {
         Box::pin(async move {
+            self.seen.lock().unwrap().push(messages.to_vec());
             let content = self.script.lock().unwrap().pop_front().unwrap_or_default();
             Ok(ChatResponse {
                 content,

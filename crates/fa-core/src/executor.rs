@@ -12,7 +12,6 @@ use std::time::Instant;
 
 use fa_bridge::{BridgeError, HostBridge};
 use serde_json::{Map, Value};
-use tracing::warn;
 
 use crate::approver::{ApprovalDecision, ApprovalRequest, ApproverRef};
 use crate::protocol::ToolCall;
@@ -164,11 +163,16 @@ impl Executor {
                             &serde_json::json!({"decision": "edit"}),
                         )?;
                     } else {
-                        warn!("edit decision on multi-call chain; treating as approve");
+                        // Fail closed: the operator did not approve the
+                        // chain as proposed, and per-stage editing is
+                        // unsupported. Silently approving the original args
+                        // would be a half-approval bug; deny instead.
                         self.log(
                             "approval.resolved",
-                            &serde_json::json!({"decision": "approve-after-edit-unsupported"}),
+                            &serde_json::json!({"decision": "deny",
+                                "reason": "edit unsupported on multi-call chain"}),
                         )?;
+                        return Err(FaError::Denied);
                     }
                 }
             }
