@@ -285,3 +285,74 @@ Describe 'session workspace confinement' {
         finally { $env:FA_SESSION_ROOT = $saved }
     }
 }
+
+Describe 'Get-GitIgnoredPaths' {
+    BeforeAll {
+        $env:FA_SESSION_ROOT = $TestDrive
+        # Module-private helper: invoke in module scope.
+        $script:gi = { param($Root, $Paths) Get-GitIgnoredPaths -Root $Root -Paths $Paths }
+    }
+    It 'returns empty outside a work tree' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $m = Get-Module FactorAgent
+        (& $m $script:gi $TestDrive @('a.txt')).Count | Should -Be 0
+    }
+    It 'returns empty with no candidates' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $m = Get-Module FactorAgent
+        (& $m $script:gi $TestDrive @()).Count | Should -Be 0
+    }
+}
+
+Describe 'Find-FAFile gitignore' {
+    BeforeAll {
+        $env:FA_SESSION_ROOT = $TestDrive
+        $script:grepo = Join-Path $TestDrive 'grepo'
+        if (Get-Command git -ErrorAction SilentlyContinue) {
+            New-Item -ItemType Directory -Path $script:grepo -Force | Out-Null
+            git -C $script:grepo init -q 2>$null
+            Set-Content -Path (Join-Path $script:grepo '.gitignore') -Value "ignored*.txt`n"
+            Set-Content -Path (Join-Path $script:grepo 'visible.txt') -Value 'v'
+            Set-Content -Path (Join-Path $script:grepo 'ignored1.txt') -Value 'x'
+        }
+    }
+    It 'filters gitignored matches and reports the hidden count' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $all = Find-FAFile -Pattern '*.txt' -Path $script:grepo
+        $paths = @($all | Where-Object { $_ -notlike '...*' })
+        $paths.Count | Should -Be 1
+        $paths[0] | Should -Be 'visible.txt'
+        $all[-1] | Should -Match '\+1 hidden by \.gitignore'
+    }
+    It '-IncludeIgnored bypasses the filter' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $all = Find-FAFile -Pattern '*.txt' -Path $script:grepo -IncludeIgnored
+        @($all | Where-Object { $_ -notlike '...*' }).Count | Should -Be 2
+    }
+    It 'says so when every match is hidden' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $r = Find-FAFile -Pattern 'ignored*.txt' -Path $script:grepo
+        $r.Count | Should -Be 1
+        $r[0] | Should -Match 'no visible matches.*hidden by \.gitignore'
+    }
+}
+
+Describe 'Find-FAText gitignore' {
+    BeforeAll {
+        $env:FA_SESSION_ROOT = $TestDrive
+        $script:trepo = Join-Path $TestDrive 'trepo'
+        if (Get-Command git -ErrorAction SilentlyContinue) {
+            New-Item -ItemType Directory -Path $script:trepo -Force | Out-Null
+            git -C $script:trepo init -q 2>$null
+            Set-Content -Path (Join-Path $script:trepo '.gitignore') -Value "ignored*.txt`n"
+            Set-Content -Path (Join-Path $script:trepo 'visible.md') -Value 'TODO: visible'
+            1..5 | ForEach-Object { "TODO $_" } | Set-Content -Path (Join-Path $script:trepo 'ignored1.txt')
+        }
+    }
+    It 'skips gitignored files and reports them' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $all = Find-FAText -Pattern 'TODO' -Path $script:trepo -Recurse
+        $hits = @($all | Where-Object { $_.Path -ne '...' })
+        $hits.Count | Should -Be 1
+        $hits[0].Path | Should -Be 'visible.md'
+        $all[-1].Line | Should -Match '\+1 files hidden by \.gitignore'
+    }
+    It '-IncludeIgnored searches the hidden files too' -Skip:(-not (Get-Command git -ErrorAction SilentlyContinue)) {
+        $all = Find-FAText -Pattern 'TODO' -Path $script:trepo -Recurse -IncludeIgnored
+        @($all | Where-Object { $_.Path -ne '...' }).Count | Should -Be 6
+    }
+}

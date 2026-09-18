@@ -11,10 +11,14 @@ function Find-FAText {
         Junk directories (build output, VCS metadata, dependency trees) are
         pruned during recursion so a broad search doesn't flood the agent's
         context with matches from artifacts. Override with -Exclude, or pass
-        -Exclude @() to disable pruning entirely. Hits are capped at
-        -MaxResults and paged with -Skip; overflow appends a truncation note
-        with the true total and the hardest-hit files so the next call can
-        narrow or page instead of guessing.
+        -Exclude @() to disable pruning entirely. Inside a git repo,
+        gitignored files are additionally filtered through `git check-ignore`
+        (the repo's own notion of noise, with correct ignore semantics)
+        unless -IncludeIgnored is given; the hidden count is always reported
+        so nothing vanishes silently.
+        Hits are capped at -MaxResults and paged with -Skip; overflow
+        appends a truncation note with the true total and the hardest-hit
+        files so the next call can narrow or page instead of guessing.
     .PARAMETER Pattern
         Regex pattern, or literal text with -SimpleMatch.
     .PARAMETER Path
@@ -41,6 +45,9 @@ function Find-FAText {
     .PARAMETER Skip
         Skip the first N hits before paging (stateless paging with
         -MaxResults). Default 0.
+    .PARAMETER IncludeIgnored
+        Include hits from gitignored files. By default, inside a git repo,
+        gitignored files are filtered out (and counted in the note).
     .EXAMPLE
         Find-FAText -Pattern "TODO" -Recurse -FilePattern "*.ps1"
         Finds TODO comments in PowerShell files, skipping target/, .git/,
@@ -59,7 +66,8 @@ function Find-FAText {
         [string[]]$Exclude = @('target', 'bin', 'obj', '.git', '.hg', '.svn',
             'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', 'out'),
         [ValidateRange(1, 100000)][int]$MaxResults = 500,
-        [ValidateRange(0, 100000)][int]$Skip = 0
+        [ValidateRange(0, 100000)][int]$Skip = 0,
+        [switch]$IncludeIgnored
     )
     # Workspace confinement: the session root is a boundary, not a suggestion.
     $root = Assert-SessionPath -Path $Path
@@ -85,6 +93,29 @@ function Find-FAText {
             elseif ($child.Name -like $FilePattern) {
                 $files.Add($child.FullName)
             }
+        }
+    }
+
+    # Gitignore relevance filter on the candidate files, before grepping:
+    # the repo's own noise list, via git itself. Best-effort; skipped
+    # outside a work tree or without git.
+    $ignoredFileCount = 0
+    if (-not $IncludeIgnored -and $files.Count -gt 0) {
+        $relFiles = [string[]]($files | ForEach-Object {
+            [System.IO.Path]::GetRelativePath($root, $_) })
+        $ignored = Get-GitIgnoredPaths -Root $root -Paths $relFiles
+        if ($ignored.Count -gt 0) {
+            $ignoredSet = [System.Collections.Generic.HashSet[string]]::new(
+                [string[]]$ignored, [System.StringComparer]::Ordinal)
+            $kept = [System.Collections.Generic.List[string]]::new()
+            foreach ($f in $files) {
+                if (-not $ignoredSet.Contains(
+                        [System.IO.Path]::GetRelativePath($root, $f))) {
+                    $kept.Add($f)
+                }
+            }
+            $ignoredFileCount = $files.Count - $kept.Count
+            $files = $kept
         }
     }
 
@@ -115,27 +146,33 @@ function Find-FAText {
             }
         }
     }
-    if ($total -eq 0) {
+    $noteParts = @()
+    if ($total -eq 0 -and $ignoredFileCount -eq 0) {
         # No hits: no note, just the empty array.
     }
-    elseif ($Skip -ge $total) {
-        $hits.Add([PSCustomObject]@{
-            Path       = '...'
-            LineNumber = 0
-            Line       = "... (no more matches: -Skip $Skip is past the $total total hits)"
-            Context    = ''
-        })
+    elseif ($total -eq 0) {
+        $noteParts += "no visible hits; $ignoredFileCount files hidden by .gitignore (-IncludeIgnored to search them)"
     }
-    elseif ($total -gt $Skip + $hits.Count) {
-        $from = $Skip + 1
-        $to = $Skip + $hits.Count
-        $top = $fileCounts.GetEnumerator() | Sort-Object Value -Descending |
-            Select-Object -First 5 | ForEach-Object { "$($_.Key) ($($_.Value))" }
+    else {
+        if ($Skip -ge $total) {
+            $noteParts += "no more matches: -Skip $Skip is past the $total total hits"
+        }
+        elseif ($total -gt $Skip + $hits.Count) {
+            $from = $Skip + 1
+            $to = $Skip + $hits.Count
+            $top = $fileCounts.GetEnumerator() | Sort-Object Value -Descending |
+                Select-Object -First 5 | ForEach-Object { "$($_.Key) ($($_.Value))" }
+            $noteParts += "truncated: showing $from-$to of $total hits; hardest-hit: $($top -join ', ')"
+        }
+        if ($ignoredFileCount -gt 0) {
+            $noteParts += "+$ignoredFileCount files hidden by .gitignore (-IncludeIgnored to search them)"
+        }
+    }
+    if ($noteParts.Count -gt 0) {
         $hits.Add([PSCustomObject]@{
             Path       = '...'
             LineNumber = 0
-            Line       = "... (truncated: showing $from-$to of $total hits; " +
-                "hardest-hit: $($top -join ', '); use -Skip/-MaxResults to page, or narrow -Pattern/-FilePattern/-Path)"
+            Line       = "... ($($noteParts -join '; '); use -Skip/-MaxResults to page, or narrow -Pattern/-FilePattern/-Path)"
             Context    = ''
         })
     }

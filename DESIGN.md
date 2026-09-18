@@ -339,6 +339,16 @@ registry/process/service writes, …) without `SupportsShouldProcess`; missing `
 `Write-Host` (prefer `Write-Verbose` / `Write-Output`); success output mixed with
 progress text.
 
+**Footgun (documented, not linted):** collection-returning tools must emit
+`Write-Output -NoEnumerate ([T[]]$list)` so the JSON-RPC wire shape is stable
+for 0/1/N results — but that same no-enumerate array, piped straight into
+`Where-Object`/`ForEach-Object` in-process, arrives as *one object* (the
+array), not N elements: `$_` is the whole array and `-like`/`-eq` act as
+array filters in boolean context, so the filter silently passes everything
+through. Assign first, then filter: `$all = Find-FAFile …; $hits = @($all |
+Where-Object { … })`. Over the RPC wire this never bites (the bridge
+serializes the return value); it only bites interactive/script composition.
+
 #### 4.9.4 Scaffolder — [DECIDED]
 
 Toolshop mode JIT-injects `New-FATool -Verb <Verb> -Noun <Noun>`, which generates the
@@ -816,6 +826,7 @@ None. All eight threads from the 2026-09-16 design session are resolved:
 | 2026-09-16 | Trust model: one boundary, one guard | Isolation invariant is the only hard boundary; env/prefs/toolchains are semantic state (anti-theater); project→user writes need default approval; multi-user out of scope for v1 (§7.5) |
 | 2026-09-18 | File tools confined to the session workspace | The host passes its cwd as `FA_SESSION_ROOT`; a module-private `Assert-SessionPath` (never exported, never in the manifest, unreachable over RPC) resolves every file-cmdlet `-Path` and throws outside the root — fail-closed when unset. The "workspace" the model sees in Block B is now a boundary, not a suggestion. `Invoke-FACommand`/terminals remain the known open sandbox problem (§7.1) |
 | 2026-09-18 | No unbounded tool returns: page + summarize, never blast | After a live run serialized ~9k repo paths (~200k tokens) verbatim into the next model request, the rule is: every collection/large output gets junk pruning, a default page cap, stateless paging, and a truncation note with the true total plus a shape summary (top subtrees / hardest-hit files) so the agent navigates instead of guessing. `Find-FAFile`/`Find-FAText` gained `-Skip`; `Read-FAFile` gained `-Offset` and caps bare reads at 2000 lines; `Invoke-FACommand` keeps the last 2000 output lines. Paging is stateless because page-walking accumulates every page in history — the summary makes narrowing the cheap path, paging the deliberate one |
+| 2026-09-18 | No canonical hidden-file concept; inherit .gitignore via git itself | Dotfiles are usually the *target* for a coding agent (`.env`, `.github/`, `.vscode/`) — pruning them by default trades noise for the worse failure mode of files that exist but the tool denies. Instead, `Find-FAFile`/`Find-FAText` filter through `git check-ignore --stdin` (batched, module-private `Get-GitIgnoredPaths`): the repo's own noise list, with real gitignore semantics instead of a reimplemented matcher, best-effort and silent outside a work tree. Default-on; the hidden count is always reported (`+N hidden by .gitignore`) so nothing vanishes silently, and `-IncludeIgnored` bypasses. Known limit: gitignore is a relevance post-filter, not traversal pruning — a huge ignored dir outside the junk list is still walked (add it via `-Exclude`) |
 | 2026-09-16 | Containment boundary at FactorAgent | Engine draws the boundary around its pwsh captive; WinAgent32 supplies identity + policy JSON (§7.1) |
 | 2026-09-16 | Distribution CLI renamed `wa32` → `fa32` | Bare `FactorAgent` rejected: collides with the `factoragent` service binary; `fa32` keeps the 32-branding and the engine/distribution split |
 | 2026-09-17 | Tool-call protocol: fenced text, not structured JSON | Model emits fenced `fa` code blocks; each non-empty line is one call: `call <Verb>-FA<Noun> {json-args}`. Prose outside fences is ignored; a malformed line never panics the parser — it becomes a warning fed back to the model for self-correction. Tool names validated for shape in the parser; the bridge `*-FA*` allowlist is the real enforcement point (§4.5, M2) |
