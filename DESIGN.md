@@ -622,10 +622,13 @@ self-corrects):
 - **Aliases rename cmdlets, never parameters.** `ls -Recurse` is right;
   `ls -la` is WRONG — posix flags do not exist in PowerShell, and the
   prompt section names this footgun explicitly.
-- **Ephemeral vs. durable.** The dialect is for commands that *run*, not
-  files that *persist*. `Write-FAFile` content keeps full cmdlet names:
-  saved scripts must not depend on aliases (PSScriptAnalyzer flags them
-  for the same reason).
+- **One vernacular, everywhere.** The dialect governs *all* PowerShell text
+  the agent writes — commands that run *and* files that persist. A script
+  saved under `--dialect posix` reads like its author wrote it. The aliases
+  are PowerShell built-ins on the Windows host, so a saved script resolves
+  there regardless of which session later runs it. (This supersedes the
+  earlier ephemeral-vs-durable split: asking the model to code-switch per
+  tool is exactly the kind of conditional subtlety small models fumble.)
 - **Default `full`.** Full-fat is clearest for the model, and our validity
   data (M4: 100% first-try for the 4B class) is all full-fat. Dialects are
   opt-in until measured. Token savings are real but secondary — scripts are
