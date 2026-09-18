@@ -202,24 +202,39 @@ async fn run_session(opts: RunOpts) -> Result<()> {
     }
 
     let handler = ClientHandler;
-    let client = RpcClient::connect(&endpoint, handler).await?;
+    let client = match RpcClient::connect(&endpoint, handler).await {
+        Ok(client) => client,
+        Err(e) => {
+            // Never orphan a server we spawned: with no client the session
+            // is useless, and on Windows the live process locks its own
+            // .exe, which blocks rebuilds and deletes.
+            if let Some(mut child) = server_child.take() {
+                let _ = child.kill().await;
+            }
+            return Err(e.into());
+        }
+    };
     println!("session {session_id} — type /quit to exit\n");
 
-    if let Some(msg) = opts.message {
-        let outcome = prompt_once(&client, &msg).await?;
-        println!("\n{outcome}");
+    let outcome = if let Some(msg) = opts.message {
+        prompt_once(&client, &msg).await.map(|o| println!("\n{o}"))
     } else {
-        repl(&client).await?;
-    }
+        repl(&client).await
+    };
 
-    // If we spawned the server, shut it down cleanly.
-    if server_child.is_some() {
+    // If we spawned the server, shut it down: graceful request first,
+    // then kill. A spawned server must never be orphaned — on Windows the
+    // live process locks its own .exe, blocking rebuilds.
+    if let Some(mut child) = server_child {
         let _ = client.peer().request("session.shutdown", json!({})).await;
-        if let Some(mut child) = server_child {
-            let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
+        if tokio::time::timeout(Duration::from_secs(10), child.wait())
+            .await
+            .is_err()
+        {
+            let _ = child.kill().await;
         }
     }
-    Ok(())
+    outcome
 }
 
 #[cfg(unix)]
