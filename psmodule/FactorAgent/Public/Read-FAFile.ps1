@@ -9,6 +9,8 @@ function Read-FAFile {
         lines or -Tail for the last N lines; the two are mutually exclusive.
     .PARAMETER Path
         File to read. Relative paths resolve against the session working directory.
+        Confined to the session workspace root (FA_SESSION_ROOT): paths
+        outside it are rejected.
     .PARAMETER Lines
         Return only the first N lines.
     .PARAMETER Tail
@@ -28,7 +30,9 @@ function Read-FAFile {
     if ($Lines -gt 0 -and $Tail -gt 0) {
         throw "Read-FAFile: -Lines and -Tail are mutually exclusive."
     }
-    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    # Workspace confinement: the session root is a boundary, not a suggestion.
+    $full = Assert-SessionPath -Path $Path
+    $item = Get-Item -LiteralPath $full -ErrorAction Stop
     if ($item.PSIsContainer) {
         throw "Read-FAFile: '$Path' is a directory, not a file."
     }

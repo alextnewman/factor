@@ -35,11 +35,15 @@ function Get-FAToolManifest {
             $ph = $help.parameters.parameter | Where-Object { $_.name -eq $p.Name } |
                 Select-Object -First 1
             $jtype = if ($isSwitch) { 'boolean' } else {
+                # NOTE: PowerShell switch executes EVERY matching clause
+                # unless break is used. 'String[]' matches both '^String'
+                # and 'String\[\]', so the array case must come first with
+                # break, or $jtype becomes @('string','array(string)').
                 switch -Regex ($typeName) {
-                    '^String' { 'string' }
-                    '^Int(32|64)?$' { 'integer' }
-                    '^Bool(ean)?$' { 'boolean' }
-                    'String\[\]' { 'array(string)' }
+                    'String\[\]' { 'array(string)'; break }
+                    '^String' { 'string'; break }
+                    '^Int(32|64)?$' { 'integer'; break }
+                    '^Bool(ean)?$' { 'boolean'; break }
                     default { 'string' }
                 }
             }

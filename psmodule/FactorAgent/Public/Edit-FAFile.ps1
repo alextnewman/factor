@@ -9,6 +9,8 @@ function Edit-FAFile {
         Supports ShouldProcess: -WhatIf previews without touching the disk.
     .PARAMETER Path
         File to edit. Relative paths resolve against the session working directory.
+        Confined to the session workspace root (FA_SESSION_ROOT): paths
+        outside it are rejected.
     .PARAMETER OldText
         Exact text to find. Must occur exactly once in the file.
     .PARAMETER NewText
@@ -28,7 +30,9 @@ function Edit-FAFile {
     if ([string]::IsNullOrEmpty($OldText)) {
         throw "Edit-FAFile: -OldText must not be empty."
     }
-    $item = Get-Item -LiteralPath $Path -ErrorAction Stop
+    # Workspace confinement: the session root is a boundary, not a suggestion.
+    $full = Assert-SessionPath -Path $Path
+    $item = Get-Item -LiteralPath $full -ErrorAction Stop
     if ($item.PSIsContainer) {
         throw "Edit-FAFile: '$Path' is a directory, not a file."
     }

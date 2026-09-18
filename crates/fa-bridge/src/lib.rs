@@ -69,6 +69,10 @@ impl HostBridge {
             .env("FA_SESSION_JSON", &env.session_json)
             .env("FA_ERROR_ACTION", &env.error_action)
             .env("FA_MAX_TERMINALS", env.max_terminals.to_string())
+            // Session workspace root: the module's file cmdlets confine
+            // -Path to this tree (Assert-SessionPath). Fail-closed when
+            // unset.
+            .env("FA_SESSION_ROOT", &env.cwd)
             .current_dir(&env.cwd);
         // Own process group: kill_tree() reaps host + terminals together.
         #[cfg(unix)]

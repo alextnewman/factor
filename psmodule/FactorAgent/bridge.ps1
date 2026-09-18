@@ -19,6 +19,8 @@
 
     Environment:
       FA_SESSION_JSON  - JSON session facts for Get-FASession
+      FA_SESSION_ROOT  - session workspace root; the file cmdlets
+                         (Assert-SessionPath) confine -Path to this tree
       FA_ERROR_ACTION  - "Continue" or anything else (= Stop); scoped per call
       FA_MAX_TERMINALS - terminal limit enforced by New-FATerminal
 

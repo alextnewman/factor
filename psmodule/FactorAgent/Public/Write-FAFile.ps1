@@ -9,7 +9,8 @@ function Write-FAFile {
         -WhatIf previews the write without touching the disk.
     .PARAMETER Path
         Destination file path. Relative paths resolve against the session
-        working directory.
+        working directory. Confined to the session workspace root
+        (FA_SESSION_ROOT): paths outside it are rejected.
     .PARAMETER Content
         The text to write.
     .PARAMETER Append
@@ -39,7 +40,10 @@ function Write-FAFile {
     }
     $bytes = $enc.GetBytes($Content)
     $action = if ($Append) { "Append $($bytes.Count) bytes" } else { "Write $($bytes.Count) bytes" }
-    $preview = "$action to '$Path'"
+    # Workspace confinement: the session root is a boundary, not a suggestion.
+    # Assert before ShouldProcess so even -WhatIf previews can't leak paths.
+    $full = Assert-SessionPath -Path $Path
+    $preview = "$action to '$full'"
     $created = -not (Test-Path -LiteralPath $Path -PathType Leaf)
     # $script:FAForceWhatIf is set by bridge.ps1 for _WhatIf calls. It
     # short-circuits BEFORE ShouldProcess so the engine never prints its
