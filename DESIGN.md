@@ -586,6 +586,17 @@ decorators a home, so nothing is repeated memetically.
 
 ### 6.1 The world-map mental model — [DECIDED] (2026-09-18)
 
+Philosophical grounding: **System Realism**. Most agent harnesses are
+text-realist: the transcript is the reality, and tool calls are side effects
+of text generation — the world exists only insofar as it is described in the
+chat. FactorAgent is system-realist: the world (repo, processes, session
+state) is the reality, and the model and operator are subjects acting within
+it. Text — messages, the Chronicle — is the record, not the territory. The
+event log is the ground truth of what happened *in the world*; every
+renderer is a projection of it. The inversion, stated plainly: in text
+realism the world is a side effect of the conversation; in system realism
+the conversation is a side effect of the world.
+
 The session is a game world — not a terminal session, and not a chat. The
 model is the player: it reads, writes, executes, and navigates. The operator
 is not the terminal's typist; the operator watches, judges (the Judgment
