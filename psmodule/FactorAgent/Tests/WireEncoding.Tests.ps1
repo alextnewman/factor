@@ -80,4 +80,20 @@ Describe 'terminal.ps1 wire encoding' {
         $v.id | Should -Be 1
         $v.output | Should -Match '§ — 日本語'
     }
+    It 'captures Write-Host and warning streams instead of leaking them onto the wire' {
+        # Write-Host writes to the information stream (6); an uncaptured
+        # stream lands on stdout raw, so the next ReadLine gets
+        # "hello from..." instead of the JSON response and the framing dies.
+        $cmd = "Write-Host 'hello-info'; Write-Warning 'warn-here'; 'plain-output'"
+        $req = (@{ id = 1; command = $cmd } | ConvertTo-Json -Compress) + "`n"
+        $raw = Invoke-WireScript -Script $script:TerminalPs1 -RequestText $req
+        $lines = @(Assert-NoRawControls -Raw $raw)
+        $lines.Count | Should -Be 2
+        $lines[0] | Should -Be '{"ready":true}'
+        $v = $lines[1] | ConvertFrom-Json -ErrorAction Stop
+        $v.id | Should -Be 1
+        $v.output | Should -Match 'hello-info'
+        $v.output | Should -Match 'warn-here'
+        $v.output | Should -Match 'plain-output'
+    }
 }

@@ -40,7 +40,11 @@ while ($true) {
         $global:LASTEXITCODE = $null
         # Dot-source, NOT & : the command runs in this scope so its state
         # persists for the next command.
-        $__faterm_out_text = . $__faterm_sb 2>&1 | Out-String
+        # Every stream must be captured: anything the command emits outside
+        # the output stream lands on stdout raw and desyncs the JSON framing.
+        # Write-Host (information stream, 6) was the observed killer; warning
+        # (3), verbose (4) and debug (5) leak identically when not silenced.
+        $__faterm_out_text = . $__faterm_sb 2>&1 3>&1 4>&1 5>&1 6>&1 | Out-String
         $__faterm_ec = $LASTEXITCODE
         $__faterm_sw.Stop()
         $__faterm_resp = @{
