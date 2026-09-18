@@ -316,7 +316,7 @@ m1_bridge.rs`, 1/1):
 
 - **Host cold start** (spawn -> first response, module import incl. all 10
   cmdlets): **644 ms** (M0 was 512 ms; the module grew up)
-- **Manifest reflection**: bridge reflects exactly **10 agent tools** from
+- **Manifest reflection**: bridge reflects exactly **11 agent tools** from
   comment-based help (synopsis, typed parameters, examples)
 - **File round-trip**: Write-FAFile -> Find-FAText (1 hit) -> Read-FAFile
   numbered lines — all shapes asserted on the Rust side

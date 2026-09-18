@@ -1,22 +1,25 @@
 function Find-FAFile {
     <#
     .SYNOPSIS
-        Finds files by glob pattern.
+        Finds files by glob pattern: a title lookup in the file catalogue.
     .DESCRIPTION
         Searches for files matching a glob pattern (e.g. "*.ps1", "demo-*").
         Returns paths relative to -Path. Add -Recurse to search subdirectories.
 
+        The catalogue contract: small result sets return the matching paths
+        themselves; large ones return an INDEX — directory cards with counts,
+        sample paths, and the narrower -Path that opens each drawer — instead
+        of page 1 of the ocean. Navigation is always a new lookup, never a
+        page turn; -Skip is the raw-paging escape hatch.
+
         Junk directories (build output, VCS metadata, dependency trees) are
-        pruned during recursion so a bare recursive listing doesn't flood the
-        agent's context with tens of thousands of artifact paths. Override
-        with -Exclude, or pass -Exclude @() to disable pruning entirely.
-        Inside a git repo, gitignored matches are additionally filtered
-        through `git check-ignore` (the repo's own notion of noise, with
-        correct ignore semantics) unless -IncludeIgnored is given; the hidden
-        count is always reported so nothing vanishes silently.
-        Results are capped at -MaxResults and paged with -Skip; overflow
-        appends a truncation note with the true total and a per-subtree
-        breakdown so the next call can narrow or page instead of guessing.
+        pruned during recursion — a traversal-performance concern owned by
+        the shared walker, not a per-tool judgment. Override with -Exclude,
+        or pass -Exclude @() to disable pruning entirely. Inside a git repo,
+        gitignored matches are additionally filtered through
+        `git check-ignore` (one spawn; the repo's own notion of noise, with
+        correct ignore semantics) unless -IncludeIgnored is given; the
+        hidden count is always reported so nothing vanishes silently.
     .PARAMETER Pattern
         Glob pattern, e.g. "*.md".
     .PARAMETER Path
@@ -32,12 +35,14 @@ function Find-FAFile {
         .svn, node_modules, __pycache__, .venv, venv, dist, build, out.
         Pass @() to disable pruning.
     .PARAMETER MaxResults
-        Cap on returned paths per page. When the total exceeds the page, the
-        final element is a truncation note stating the true total and the
-        largest subtrees. Default 500.
+        Result-set size at which the catalogue flips from items to the
+        index view. Default 500. (Explicitly passing -Skip always opts
+        into raw paging instead.)
     .PARAMETER Skip
-        Skip the first N matches before paging (stateless paging with
-        -MaxResults). Default 0.
+        Raw-paging escape hatch: skip the first N matches and return the
+        next -MaxResults as plain paths, bypassing the index. Explicitly
+        passing -Skip (even 0) opts out of the catalogue view for this
+        call. Default 0.
     .PARAMETER IncludeIgnored
         Include matches hidden by .gitignore. By default, inside a git repo,
         gitignored matches are filtered out (and counted in the note).
@@ -46,10 +51,11 @@ function Find-FAFile {
         Finds all files starting with demo- under the working directory,
         skipping target/, .git/, node_modules/, etc.
     .EXAMPLE
-        Find-FAFile -Pattern "*.log" -Recurse -Skip 500 -MaxResults 500
-        Second page of the recursive log listing.
+        Find-FAFile -Pattern "*.ps1" -Recurse -Path .\src
+        Opens the src drawer of the catalogue for PowerShell files.
     .OUTPUTS
-        String[]. Relative file paths, one per line.
+        String[]. Relative file paths — or, for large result sets, index
+        cards naming the directory drawers that hold them.
     #>
     [CmdletBinding()]
     param(
@@ -64,91 +70,33 @@ function Find-FAFile {
     )
     # Workspace confinement: the session root is a boundary, not a suggestion.
     $root = Assert-SessionPath -Path $Path
-    $excludeSet = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]@($Exclude | ForEach-Object { $_.ToLowerInvariant() }),
-        [System.StringComparer]::OrdinalIgnoreCase)
 
-    # Collect all matches first: gitignore filtering needs the full set
-    # before paging, and the memory cost (paths only) is trivial next to
-    # the context cost the page cap protects.
-    $all = [System.Collections.Generic.List[string]]::new()
-    $sep = [System.IO.Path]::DirectorySeparatorChar
-    # Manual stack recursion: excluded directories are pruned, never walked.
-    # (Get-ChildItem -Exclude filters results but still descends in PS 7.)
-    $stack = [System.Collections.Generic.Stack[string]]::new()
-    $stack.Push($root)
-    while ($stack.Count -gt 0) {
-        $dir = $stack.Pop()
-        $children = Get-ChildItem -LiteralPath $dir -ErrorAction SilentlyContinue
-        foreach ($child in $children) {
-            if ($child.PSIsContainer) {
-                if ($Recurse -and -not $excludeSet.Contains($child.Name)) {
-                    $stack.Push($child.FullName)
-                }
-            }
-            elseif ($child.Name -like $Pattern) {
-                $all.Add([System.IO.Path]::GetRelativePath($root, $child.FullName))
-            }
-        }
-    }
+    # One shared traversal; deterministic order for stable cards and pages.
+    $full = Get-FileCandidate -Root $root -FilePattern $Pattern `
+        -Recurse:$Recurse -Exclude $Exclude
+    $all = [string[]]@($full | ForEach-Object {
+        [System.IO.Path]::GetRelativePath($root, $_) } | Sort-Object)
 
     # Gitignore relevance filter: the repo's own noise list, via git itself.
-    $ignoredCount = 0
+    # Best-effort and fail-open; the hidden count keeps it honest.
+    $hiddenNote = ''
     $visible = $all
     if (-not $IncludeIgnored -and $all.Count -gt 0) {
-        $ignored = Get-GitIgnoredPaths -Root $root -Paths ([string[]]$all)
+        $ignored = Get-GitIgnoredPaths -Root $root -Paths $all
         if ($ignored.Count -gt 0) {
             $ignoredSet = [System.Collections.Generic.HashSet[string]]::new(
                 [string[]]$ignored, [System.StringComparer]::Ordinal)
-            $visible = [System.Collections.Generic.List[string]]::new()
-            foreach ($m in $all) {
-                if (-not $ignoredSet.Contains($m)) { $visible.Add($m) }
-            }
-            $ignoredCount = $all.Count - $visible.Count
+            $visible = [string[]]@($all | Where-Object { -not $ignoredSet.Contains($_) })
+            $hiddenNote = "+$($all.Count - $visible.Count) hidden by .gitignore (-IncludeIgnored to show)"
         }
     }
 
-    # Page the visible set; the subtree breakdown is a map over what the
-    # agent can actually see.
-    $rel = [System.Collections.Generic.List[string]]::new()
-    $dirCounts = @{}
-    $total = $visible.Count
-    for ($i = 0; $i -lt $total; $i++) {
-        $relPath = $visible[$i]
-        $key = if ($relPath.Contains($sep)) {
-            ($relPath -split [regex]::Escape($sep))[0] + $sep
-        } else { '.' }
-        $dirCounts[$key] = [int]$dirCounts[$key] + 1
-        if ($i -ge $Skip -and $rel.Count -lt $MaxResults) {
-            $rel.Add($relPath)
-        }
-    }
+    $view = Format-ResultView -Items $visible -Kind File -Skip $Skip `
+        -MaxResults $MaxResults -Unit 'matches' -HiddenNote $hiddenNote `
+        -Guidance 'Get-FATree shows the shape; open a drawer with its -Path' `
+        -RawPage:$($PSBoundParameters.ContainsKey('Skip'))
 
-    $noteParts = @()
-    if ($total -eq 0 -and $ignoredCount -eq 0) {
-        # No matches at all: no note, just the empty array.
-    }
-    elseif ($total -eq 0) {
-        $noteParts += "no visible matches; $ignoredCount hidden by .gitignore (-IncludeIgnored to show)"
-    }
-    else {
-        if ($Skip -ge $total) {
-            $noteParts += "no more matches: -Skip $Skip is past the $total total matches"
-        }
-        elseif ($total -gt $Skip + $rel.Count) {
-            $from = $Skip + 1
-            $to = $Skip + $rel.Count
-            $top = $dirCounts.GetEnumerator() | Sort-Object Value -Descending |
-                Select-Object -First 8 | ForEach-Object { "$($_.Key) ($($_.Value))" }
-            $noteParts += "truncated: showing $from-$to of $total matches; largest: $($top -join ', ')"
-        }
-        if ($ignoredCount -gt 0) {
-            $noteParts += "+$ignoredCount hidden by .gitignore (-IncludeIgnored to show)"
-        }
-    }
-    if ($noteParts.Count -gt 0) {
-        $rel.Add("... ($($noteParts -join '; '); use -Skip/-MaxResults to page, or narrow -Pattern/-Path)")
-    }
+    # The display layer owns the wire shape; the tool only casts it.
     # Always emit an array on the wire, even for 0 or 1 matches.
-    Write-Output -NoEnumerate ([string[]]$rel)
+    Write-Output -NoEnumerate ([string[]]$view.Lines)
 }

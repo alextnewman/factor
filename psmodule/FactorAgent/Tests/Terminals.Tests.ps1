@@ -117,12 +117,12 @@ Describe 'Get-FASession' {
 }
 
 Describe 'Get-FAToolManifest' {
-    It 'emits all 10 agent tools as JSON' {
+    It 'emits all 11 agent tools as JSON' {
         $m = Get-FAToolManifest | ConvertFrom-Json
         $names = @($m.name)
-        $names.Count | Should -Be 10
+        $names.Count | Should -Be 11
         foreach ($n in @('Get-FASession','Read-FAFile','Write-FAFile','Edit-FAFile',
-                'Find-FAFile','Find-FAText','New-FATerminal','Get-FATerminal',
+                'Find-FAFile','Find-FAText','Get-FATree','New-FATerminal','Get-FATerminal',
                 'Invoke-FACommand','Remove-FATerminal')) {
             $names | Should -Contain $n
         }

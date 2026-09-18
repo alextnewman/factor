@@ -49,13 +49,13 @@ async fn m1_create_find_terminal() {
     .expect("spawn host");
     eprintln!("M1 host cold start: {cold:?}");
 
-    // 1. The manifest IS the module: 10 agent tools reflected.
+    // 1. The manifest IS the module: 11 agent tools reflected.
     let m = bridge
         .call("Get-FAToolManifest", &args(json!({})))
         .await
         .unwrap();
     let tools: Vec<Value> = serde_json::from_str(m.as_str().unwrap()).unwrap();
-    assert_eq!(tools.len(), 10, "expected 10 agent tools, got {tools:?}");
+    assert_eq!(tools.len(), 11, "expected 11 agent tools, got {tools:?}");
 
     // 2. Create a file.
     let f = work.join("notes.txt");

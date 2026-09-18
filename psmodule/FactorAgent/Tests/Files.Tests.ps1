@@ -146,17 +146,25 @@ Describe 'Find-FAFile' {
         $r = (Find-FAFile -Pattern '*.txt' -Path $script:fd -Recurse -Exclude @())
         @($r | Where-Object { $_ -like '*junk.txt' }).Count | Should -Be 1
     }
-    It '-MaxResults caps with a truncation note' {
-        1..10 | ForEach-Object { Set-Content -Path (Join-Path $script:fd "cap$_.txt") -Value 'x' }
-        $r = (Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -MaxResults 3)
-        $r.Count | Should -Be 4
-        $r[-1] | Should -Match 'truncated.*of 10 matches'
+    It 'large result sets return an index, not page 1 of the ocean' {
+        1..4 | ForEach-Object { Set-Content -Path (Join-Path $script:fd "idx$_.txt") -Value 'x' }
+        $sub2 = Join-Path $script:fd 'idxsub'
+        New-Item -ItemType Directory -Path $sub2 -Force | Out-Null
+        1..4 | ForEach-Object { Set-Content -Path (Join-Path $sub2 "idx$_.txt") -Value 'x' }
+        $r = (Find-FAFile -Pattern 'idx*.txt' -Path $script:fd -Recurse -MaxResults 3)
+        # 8 matches > MaxResults 3: two directory cards + note, no raw paths.
+        $cards = @($r | Where-Object { $_ -notlike '...*' })
+        $cards.Count | Should -Be 2
+        $cards[0] | Should -Match '\(top level\) - 4 matches \(e\.g\. '
+        $cards[1] | Should -Match 'idxsub/ - 4 matches \(e\.g\. .*\) - narrow: -Path "idxsub"'
+        $r[-1] | Should -Match 'index of 8 matches in 2 groups'
     }
-    It '-Skip pages through results' {
+    It '-Skip pages raw through results, bypassing the index' {
         1..10 | ForEach-Object { Set-Content -Path (Join-Path $script:fd "cap$_.txt") -Value 'x' }
         # Assign before filtering: the no-enumerate wire shape must not be
         # piped straight into Where-Object (it would pass as one object).
-        $all1 = Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -MaxResults 3
+        # Explicitly passing -Skip (even 0) opts out of the catalogue view.
+        $all1 = Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -MaxResults 3 -Skip 0
         $all2 = Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -MaxResults 3 -Skip 3
         $p1 = @($all1 | Where-Object { $_ -notlike '...*' })
         $p2 = @($all2 | Where-Object { $_ -notlike '...*' })
@@ -164,10 +172,12 @@ Describe 'Find-FAFile' {
         $p2.Count | Should -Be 3
         # Pages are disjoint windows onto the same result set.
         @($p1 + $p2 | Sort-Object -Unique).Count | Should -Be 6
+        $all1[-1] | Should -Match 'showing 1-3 of 10 matches'
     }
-    It 'truncation note names largest subtrees' {
+    It 'the index names the largest drawers first' {
         $r = (Find-FAFile -Pattern '*.txt' -Path $script:fd -Recurse -MaxResults 2)
-        $r[-1] | Should -Match 'truncated.*largest:'
+        $r[-1] | Should -Match 'index of \d+ matches in \d+ groups'
+        $r[0] | Should -Match '- \d+ matches \(e\.g\. '
     }
     It '-Skip past the end says so' {
         $r = (Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -Skip 9999)
@@ -222,15 +232,20 @@ Describe 'Find-FAText' {
         $r = (Find-FAText -Pattern 'TODO' -Path $script:gd -Recurse -Exclude @())
         $r.Count | Should -Be 3
     }
-    It '-MaxResults caps hits with a truncation note' {
+    It 'large hit sets return file cards, not raw lines' {
         1..10 | ForEach-Object { "TODO $_" } | Set-Content -Path (Join-Path $script:gd 'many.txt')
         $r = (Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3)
-        $r.Count | Should -Be 4
-        $r[-1].Line | Should -Match 'truncated'
+        $cards = @($r | Where-Object { $_.Path -ne '...' })
+        $cards.Count | Should -Be 1
+        $cards[0].Path | Should -Be 'many.txt'
+        $cards[0].LineNumber | Should -Be 0
+        $cards[0].Line | Should -Match 'index: 10 hits \(e\.g\. L1: '
+        $cards[0].Line | Should -Match 'narrow: -FilePattern "many.txt"'
+        $r[-1].Line | Should -Match 'index of 10 hits in 1 groups'
     }
-    It '-Skip pages through hits' {
+    It '-Skip pages raw through hits, bypassing the index' {
         1..10 | ForEach-Object { "TODO $_" } | Set-Content -Path (Join-Path $script:gd 'many.txt')
-        $all1 = Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3
+        $all1 = Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3 -Skip 0
         $all2 = Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3 -Skip 3
         $p1 = @($all1 | Where-Object { $_.Path -ne '...' })
         $p2 = @($all2 | Where-Object { $_.Path -ne '...' })
@@ -238,13 +253,64 @@ Describe 'Find-FAText' {
         $p2.Count | Should -Be 3
         $p1[0].LineNumber | Should -Be 1
         $p2[0].LineNumber | Should -Be 4
+        $all1[-1].Line | Should -Match 'showing 1-3 of 10 hits'
     }
-    It 'truncation note reports true total and hardest-hit files' {
+    It 'the index reports the true total with file cards' {
         1..10 | ForEach-Object { "TODO $_" } | Set-Content -Path (Join-Path $script:gd 'many.txt')
         $r = (Find-FAText -Pattern 'TODO' -Path $script:gd -Recurse -MaxResults 3)
-        $r.Count | Should -Be 4
-        $r[-1].Line | Should -Match 'of 12 hits'
-        $r[-1].Line | Should -Match 'hardest-hit:'
+        $r[-1].Line | Should -Match 'index of 12 hits'
+        $cards = @($r | Where-Object { $_.Path -ne '...' })
+        $cards[0].Path | Should -Be 'many.txt'
+        $cards[0].Line | Should -Match 'index: 10 hits'
+    }
+}
+
+Describe 'Get-FATree' {
+    BeforeAll {
+        $env:FA_SESSION_ROOT = $TestDrive
+        $d = Join-Path $TestDrive 'tree'
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Set-Content -Path (Join-Path $d 'root.txt') -Value 'x'
+        $sa = Join-Path $d 'alpha'
+        New-Item -ItemType Directory -Path $sa -Force | Out-Null
+        1..3 | ForEach-Object { Set-Content -Path (Join-Path $sa "a$_.txt") -Value 'x' }
+        $sb = Join-Path $sa 'beta'
+        New-Item -ItemType Directory -Path $sb -Force | Out-Null
+        1..2 | ForEach-Object { Set-Content -Path (Join-Path $sb "b$_.txt") -Value 'x' }
+        $junk = Join-Path $d 'target' 'x'
+        New-Item -ItemType Directory -Path $junk -Force | Out-Null
+        Set-Content -Path (Join-Path $junk 'j.txt') -Value 'x'
+        $script:td = $d
+    }
+    It 'maps directories with recursive file counts' {
+        $r = Get-FATree -Path $script:td
+        $r[0] | Should -Match 'Tree: .* \(6 files\)'
+        @($r | Where-Object { $_ -match 'alpha/ - 5 files' }).Count | Should -Be 1
+        @($r | Where-Object { $_ -match '^root\.txt$' }).Count | Should -Be 1
+    }
+    It 'prunes junk directories like the find tools' {
+        $r = Get-FATree -Path $script:td
+        @($r | Where-Object { $_ -match 'target' }).Count | Should -Be 0
+    }
+    It '-Depth folds deeper subtrees into their counts' {
+        $r = Get-FATree -Path $script:td -Depth 1
+        @($r | Where-Object { $_ -match 'beta' }).Count | Should -Be 0
+        @($r | Where-Object { $_ -match 'alpha/ - 5 files' }).Count | Should -Be 1
+        $r[-1] | Should -Match 'folded below depth 1'
+    }
+    It '-MaxNodes caps the maze' {
+        $r = Get-FATree -Path $script:td -MaxNodes 3
+        $r[-1] | Should -Match 'node cap 3 reached'
+    }
+    It 'rejects paths outside the session root' {
+        { Get-FATree -Path (Split-Path $TestDrive -Parent) } | Should -Throw '*outside the session root*'
+    }
+    It 'an empty directory maps as empty' {
+        $e = Join-Path $script:td 'empty'
+        New-Item -ItemType Directory -Path $e -Force | Out-Null
+        $r = Get-FATree -Path $e
+        $r.Count | Should -Be 2
+        $r[1] | Should -Be '(empty)'
     }
 }
 
