@@ -14,8 +14,14 @@
     Loop internals use __faterm_-prefixed names so dot-sourced commands are
     unlikely to clobber the loop's own variables.
 #>
-$__faterm_in  = [Console]::In
-$__faterm_out = [Console]::Out
+# The wire is UTF-8 JSON, unconditionally. [Console]::In / [Console]::Out
+# follow the legacy Windows console code page (e.g. cp437), which maps
+# characters like § (U+00A7) to raw C0 control bytes (0x15) — silently
+# corrupting the JSON framing for any non-ASCII payload. Bypass them with
+# explicit UTF-8 streams (no BOM); the per-line Flush() calls below stay.
+$__faterm_utf8 = [System.Text.UTF8Encoding]::new($false)
+$__faterm_in  = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), $__faterm_utf8)
+$__faterm_out = [System.IO.StreamWriter]::new([Console]::OpenStandardOutput(), $__faterm_utf8)
 ($__faterm_out.WriteLine('{"ready":true}'))
 $__faterm_out.Flush()
 

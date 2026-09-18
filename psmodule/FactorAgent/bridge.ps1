@@ -48,8 +48,14 @@ function ConvertTo-FlatHashtable {
     return $ht
 }
 
-$stdin  = [Console]::In
-$stdout = [Console]::Out
+# The wire is UTF-8 JSON, unconditionally. [Console]::In / [Console]::Out
+# follow the legacy Windows console code page (e.g. cp437), which maps
+# characters like § (U+00A7) to raw C0 control bytes (0x15) — silently
+# corrupting the JSON framing for any non-ASCII payload. Bypass them with
+# explicit UTF-8 streams (no BOM); the per-line Flush() calls below stay.
+$wireUtf8 = [System.Text.UTF8Encoding]::new($false)
+$stdin  = [System.IO.StreamReader]::new([Console]::OpenStandardInput(), $wireUtf8)
+$stdout = [System.IO.StreamWriter]::new([Console]::OpenStandardOutput(), $wireUtf8)
 
 while ($true) {
     $line = $stdin.ReadLine()
