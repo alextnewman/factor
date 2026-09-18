@@ -1,0 +1,25 @@
+<Page
+    x:Class="FactorClient.Views.TerminalsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <StackPanel Padding="24" Spacing="12">
+        <TextBlock Text="Terminals" Style="{ThemeResource TitleTextBlockStyle}"/>
+        <TextBlock TextWrapping="WrapWholeWords" Opacity="0.65" MaxWidth="720" HorizontalAlignment="Left">
+            <Run Text="Cells, not commands. "/><Run Text="New-FATerminal and Remove-FATerminal are not approval-gated — bounded by FA_MAX_TERMINALS (8), never silently reaped. Approval belongs to the action inside the cell."/>
+        </TextBlock>
+        <TabView x:Name="Cells" MaxWidth="860" HorizontalAlignment="Left"
+                 AddTabButtonClick="Cells_AddTabButtonClick"
+                 TabCloseRequested="Cells_TabCloseRequested">
+            <TabView.TabItems>
+                <TabViewItem Header="default" IsClosable="False">
+                    <TextBlock FontFamily="Consolas" FontSize="12.5" Padding="12" TextWrapping="Wrap"
+                               Text="PS V:\Sources\factor&gt; .\hello.ps1&#x0a;hello&#x0a;PS V:\Sources\factor&gt;"/>
+                </TabViewItem>
+            </TabView.TabItems>
+        </TabView>
+    </StackPanel>
+</Page>

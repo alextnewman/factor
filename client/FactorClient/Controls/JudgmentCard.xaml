@@ -1,0 +1,41 @@
+<UserControl
+    x:Class="FactorClient.Controls.JudgmentCard"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <!-- Elevated acrylic: judgment has physical presence in the feed.
+         Approve → the whole chain runs. Deny → zero calls execute. -->
+    <Border Background="{StaticResource JudgmentAcrylic}"
+            BorderBrush="{ThemeResource AccentFillColorDefaultBrush}"
+            BorderThickness="1" CornerRadius="8" Padding="16">
+        <StackPanel Spacing="10">
+            <TextBlock Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.75">
+                <Run Text="◈ "/><Run Text="JUDGMENT REQUIRED — APPROVAL CHAIN"/>
+            </TextBlock>
+            <TextBlock TextWrapping="WrapWholeWords">
+                <Run Text="The agent proposes "/><Bold><Run x:Name="CallCountText" Text="1 call"/></Bold><Run Text=". Approve and the whole chain runs, in order. Deny and "/><Bold><Run Text="zero calls execute"/></Bold><Run Text=" — none of the effects happen, and the agent is told so."/>
+            </TextBlock>
+            <ItemsControl x:Name="ChainList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border Background="{ThemeResource CardBackgroundFillColorSecondaryBrush}"
+                                CornerRadius="6" Padding="10,8" Margin="0,0,0,6">
+                            <TextBlock FontFamily="Consolas" FontSize="12.5">
+                                <Run Text="{Binding Name}" FontWeight="SemiBold"/><Run Text="  "/><Run Text="{Binding Arguments}"/>
+                            </TextBlock>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <StackPanel x:Name="Actions" Orientation="Horizontal" Spacing="8">
+                <Button Content="Approve" Style="{ThemeResource AccentButtonStyle}" Click="Approve_Click"/>
+                <Button Content="Deny" Click="Deny_Click"/>
+                <Button Content="Edit" Click="Edit_Click" Opacity="0.75"/>
+            </StackPanel>
+            <TextBlock x:Name="Verdict" Visibility="Collapsed" TextWrapping="WrapWholeWords"/>
+        </StackPanel>
+    </Border>
+</UserControl>

@@ -1,0 +1,44 @@
+<Page
+    x:Class="FactorClient.Views.MazePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d">
+
+    <StackPanel Padding="24" Spacing="12">
+        <TextBlock Text="Maze" Style="{ThemeResource TitleTextBlockStyle}"/>
+        <TextBlock Text="The wire carries the maze, not the database — grouped index cards with narrowing calls."
+                   Opacity="0.65"/>
+        <StackPanel Orientation="Horizontal" Spacing="20">
+            <TreeView x:Name="MazeTree" MinWidth="320" MaxHeight="420"
+                      ItemInvoked="MazeTree_ItemInvoked">
+                <TreeView.RootNodes>
+                    <TreeViewNode Content="V:\Sources\factor" IsExpanded="True">
+                        <TreeViewNode.Children>
+                            <TreeViewNode Content="src — drawer (34 files)" IsExpanded="True">
+                                <TreeViewNode.Children>
+                                    <TreeViewNode Content="bridge — drawer (6)"/>
+                                    <TreeViewNode Content="engine — drawer (11)"/>
+                                    <TreeViewNode Content="loop — drawer (9)"/>
+                                </TreeViewNode.Children>
+                            </TreeViewNode>
+                            <TreeViewNode Content="psmodule — drawer (12)"/>
+                            <TreeViewNode Content="scripts — drawer (8)"/>
+                        </TreeViewNode.Children>
+                    </TreeViewNode>
+                </TreeView.RootNodes>
+            </TreeView>
+            <Border Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                    BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                    BorderThickness="1" CornerRadius="8" Padding="16"
+                    VerticalAlignment="Top" MinWidth="320">
+                <StackPanel Spacing="8">
+                    <TextBlock Text="NARROWING CALL" Style="{ThemeResource CaptionTextBlockStyle}" Opacity="0.7"/>
+                    <TextBlock x:Name="NarrowDetail" FontFamily="Consolas" FontSize="12.5"
+                               TextWrapping="Wrap" Text="Select a drawer to see its narrowing call."/>
+                </StackPanel>
+            </Border>
+        </StackPanel>
+    </StackPanel>
+</Page>

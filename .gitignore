@@ -4,3 +4,6 @@ target/
 .tools/
 # Session state when running the prototype locally.
 .state/
+# WinUI client build outputs.
+client/**/bin/
+client/**/obj/
