@@ -28,6 +28,30 @@ Describe 'Read-FAFile' {
         { Read-FAFile -Path (Join-Path $TestDrive 'b.txt') -Lines 2 -Tail 2 } |
             Should -Throw '*mutually exclusive*'
     }
+    It '-Tail and -Offset are mutually exclusive' {
+        { Read-FAFile -Path (Join-Path $TestDrive 'b.txt') -Tail 2 -Offset 2 } |
+            Should -Throw '*mutually exclusive*'
+    }
+    It '-Offset pages with original numbering' {
+        1..10 | ForEach-Object { "line $_" } | Set-Content -Path (Join-Path $TestDrive 'p.txt')
+        $r = Read-FAFile -Path (Join-Path $TestDrive 'p.txt') -Lines 3 -Offset 4
+        $r.Count | Should -Be 3
+        $r[0] | Should -Be '5: line 5'
+        $r[2] | Should -Be '7: line 7'
+    }
+    It 'default window caps huge files with a note' {
+        1..2500 | ForEach-Object { "line $_" } | Set-Content -Path (Join-Path $TestDrive 'huge.txt')
+        $r = Read-FAFile -Path (Join-Path $TestDrive 'huge.txt')
+        $r.Count | Should -Be 2001
+        $r[0] | Should -Be '1: line 1'
+        $r[-1] | Should -Match 'showing lines 1-2000 of 2500'
+    }
+    It 'offset past EOF says so' {
+        Set-Content -Path (Join-Path $TestDrive 's.txt') -Value @('a', 'b')
+        $r = Read-FAFile -Path (Join-Path $TestDrive 's.txt') -Offset 99
+        $r.Count | Should -Be 1
+        $r[0] | Should -Match 'past the end'
+    }
     It 'throws on missing file and on directories' {
         { Read-FAFile -Path (Join-Path $TestDrive 'nope.txt') } | Should -Throw
         { Read-FAFile -Path $TestDrive } | Should -Throw '*directory*'
@@ -128,6 +152,28 @@ Describe 'Find-FAFile' {
         $r.Count | Should -Be 4
         $r[-1] | Should -Match 'truncated.*of 10 matches'
     }
+    It '-Skip pages through results' {
+        1..10 | ForEach-Object { Set-Content -Path (Join-Path $script:fd "cap$_.txt") -Value 'x' }
+        # Assign before filtering: the no-enumerate wire shape must not be
+        # piped straight into Where-Object (it would pass as one object).
+        $all1 = Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -MaxResults 3
+        $all2 = Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -MaxResults 3 -Skip 3
+        $p1 = @($all1 | Where-Object { $_ -notlike '...*' })
+        $p2 = @($all2 | Where-Object { $_ -notlike '...*' })
+        $p1.Count | Should -Be 3
+        $p2.Count | Should -Be 3
+        # Pages are disjoint windows onto the same result set.
+        @($p1 + $p2 | Sort-Object -Unique).Count | Should -Be 6
+    }
+    It 'truncation note names largest subtrees' {
+        $r = (Find-FAFile -Pattern '*.txt' -Path $script:fd -Recurse -MaxResults 2)
+        $r[-1] | Should -Match 'truncated.*largest:'
+    }
+    It '-Skip past the end says so' {
+        $r = (Find-FAFile -Pattern 'cap*.txt' -Path $script:fd -Skip 9999)
+        $r.Count | Should -Be 1
+        $r[0] | Should -Match 'no more matches'
+    }
 }
 
 Describe 'Find-FAText' {
@@ -181,6 +227,24 @@ Describe 'Find-FAText' {
         $r = (Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3)
         $r.Count | Should -Be 4
         $r[-1].Line | Should -Match 'truncated'
+    }
+    It '-Skip pages through hits' {
+        1..10 | ForEach-Object { "TODO $_" } | Set-Content -Path (Join-Path $script:gd 'many.txt')
+        $all1 = Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3
+        $all2 = Find-FAText -Pattern 'TODO' -Path $script:gd -FilePattern 'many.txt' -MaxResults 3 -Skip 3
+        $p1 = @($all1 | Where-Object { $_.Path -ne '...' })
+        $p2 = @($all2 | Where-Object { $_.Path -ne '...' })
+        $p1.Count | Should -Be 3
+        $p2.Count | Should -Be 3
+        $p1[0].LineNumber | Should -Be 1
+        $p2[0].LineNumber | Should -Be 4
+    }
+    It 'truncation note reports true total and hardest-hit files' {
+        1..10 | ForEach-Object { "TODO $_" } | Set-Content -Path (Join-Path $script:gd 'many.txt')
+        $r = (Find-FAText -Pattern 'TODO' -Path $script:gd -Recurse -MaxResults 3)
+        $r.Count | Should -Be 4
+        $r[-1].Line | Should -Match 'of 12 hits'
+        $r[-1].Line | Should -Match 'hardest-hit:'
     }
 }
 

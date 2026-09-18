@@ -10,8 +10,9 @@ function Find-FAFile {
         pruned during recursion so a bare recursive listing doesn't flood the
         agent's context with tens of thousands of artifact paths. Override
         with -Exclude, or pass -Exclude @() to disable pruning entirely.
-        Results are capped at -MaxResults; overflow appends a truncation note
-        instead of silently dropping matches.
+        Results are capped at -MaxResults and paged with -Skip; overflow
+        appends a truncation note with the true total and a per-subtree
+        breakdown so the next call can narrow or page instead of guessing.
     .PARAMETER Pattern
         Glob pattern, e.g. "*.md".
     .PARAMETER Path
@@ -27,12 +28,19 @@ function Find-FAFile {
         .svn, node_modules, __pycache__, .venv, venv, dist, build, out.
         Pass @() to disable pruning.
     .PARAMETER MaxResults
-        Cap on returned paths. When exceeded, the final element is a
-        truncation note stating the true total. Default 500.
+        Cap on returned paths per page. When the total exceeds the page, the
+        final element is a truncation note stating the true total and the
+        largest subtrees. Default 500.
+    .PARAMETER Skip
+        Skip the first N matches before paging (stateless paging with
+        -MaxResults). Default 0.
     .EXAMPLE
         Find-FAFile -Pattern "demo-*" -Recurse
         Finds all files starting with demo- under the working directory,
         skipping target/, .git/, node_modules/, etc.
+    .EXAMPLE
+        Find-FAFile -Pattern "*.log" -Recurse -Skip 500 -MaxResults 500
+        Second page of the recursive log listing.
     .OUTPUTS
         String[]. Relative file paths, one per line.
     #>
@@ -43,7 +51,8 @@ function Find-FAFile {
         [switch]$Recurse,
         [string[]]$Exclude = @('target', 'bin', 'obj', '.git', '.hg', '.svn',
             'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', 'out'),
-        [ValidateRange(1, 100000)][int]$MaxResults = 500
+        [ValidateRange(1, 100000)][int]$MaxResults = 500,
+        [ValidateRange(0, 100000)][int]$Skip = 0
     )
     # Workspace confinement: the session root is a boundary, not a suggestion.
     $root = Assert-SessionPath -Path $Path
@@ -53,6 +62,8 @@ function Find-FAFile {
 
     $rel = [System.Collections.Generic.List[string]]::new()
     $total = 0
+    $dirCounts = @{}
+    $sep = [System.IO.Path]::DirectorySeparatorChar
     # Manual stack recursion: excluded directories are pruned, never walked.
     # (Get-ChildItem -Exclude filters results but still descends in PS 7.)
     $stack = [System.Collections.Generic.Stack[string]]::new()
@@ -68,14 +79,32 @@ function Find-FAFile {
             }
             elseif ($child.Name -like $Pattern) {
                 $total++
-                if ($rel.Count -lt $MaxResults) {
-                    $rel.Add([System.IO.Path]::GetRelativePath($root, $child.FullName))
+                $relPath = [System.IO.Path]::GetRelativePath($root, $child.FullName)
+                $key = if ($relPath.Contains($sep)) {
+                    ($relPath -split [regex]::Escape($sep))[0] + $sep
+                } else { '.' }
+                $dirCounts[$key] = [int]$dirCounts[$key] + 1
+                $idx = $total - 1
+                if ($idx -ge $Skip -and $rel.Count -lt $MaxResults) {
+                    $rel.Add($relPath)
                 }
             }
         }
     }
-    if ($total -gt $MaxResults) {
-        $rel.Add("... (truncated: showing first $MaxResults of $total matches; narrow -Pattern or -Path)")
+    if ($total -eq 0) {
+        # No matches: no note, just the empty array.
+    }
+    elseif ($Skip -ge $total) {
+        $rel.Add("... (no more matches: -Skip $Skip is past the $total total matches)")
+    }
+    elseif ($total -gt $Skip + $rel.Count) {
+        $shown = $rel.Count
+        $from = $Skip + 1
+        $to = $Skip + $shown
+        $top = $dirCounts.GetEnumerator() | Sort-Object Value -Descending |
+            Select-Object -First 8 | ForEach-Object { "$($_.Key) ($($_.Value))" }
+        $rel.Add("... (truncated: showing $from-$to of $total matches; " +
+            "largest: $($top -join ', '); use -Skip/-MaxResults to page, or narrow -Pattern/-Path)")
     }
     # Always emit an array on the wire, even for 0 or 1 matches.
     Write-Output -NoEnumerate ([string[]]$rel)

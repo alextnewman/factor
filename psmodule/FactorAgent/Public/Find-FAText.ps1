@@ -12,7 +12,9 @@ function Find-FAText {
         pruned during recursion so a broad search doesn't flood the agent's
         context with matches from artifacts. Override with -Exclude, or pass
         -Exclude @() to disable pruning entirely. Hits are capped at
-        -MaxResults with an explicit truncation note.
+        -MaxResults and paged with -Skip; overflow appends a truncation note
+        with the true total and the hardest-hit files so the next call can
+        narrow or page instead of guessing.
     .PARAMETER Pattern
         Regex pattern, or literal text with -SimpleMatch.
     .PARAMETER Path
@@ -33,8 +35,12 @@ function Find-FAText {
         .svn, node_modules, __pycache__, .venv, venv, dist, build, out.
         Pass @() to disable pruning.
     .PARAMETER MaxResults
-        Cap on returned hits. When exceeded, the final element is a
-        truncation note. Default 500.
+        Cap on returned hits per page. When the total exceeds the page, the
+        final element is a truncation note stating the true total and the
+        hardest-hit files. Default 500.
+    .PARAMETER Skip
+        Skip the first N hits before paging (stateless paging with
+        -MaxResults). Default 0.
     .EXAMPLE
         Find-FAText -Pattern "TODO" -Recurse -FilePattern "*.ps1"
         Finds TODO comments in PowerShell files, skipping target/, .git/,
@@ -52,7 +58,8 @@ function Find-FAText {
         [switch]$SimpleMatch,
         [string[]]$Exclude = @('target', 'bin', 'obj', '.git', '.hg', '.svn',
             'node_modules', '__pycache__', '.venv', 'venv', 'dist', 'build', 'out'),
-        [ValidateRange(1, 100000)][int]$MaxResults = 500
+        [ValidateRange(1, 100000)][int]$MaxResults = 500,
+        [ValidateRange(0, 100000)][int]$Skip = 0
     )
     # Workspace confinement: the session root is a boundary, not a suggestion.
     $root = Assert-SessionPath -Path $Path
@@ -84,30 +91,51 @@ function Find-FAText {
     # Always emit an array (even for 0 or 1 hits): the JSON-RPC wire shape
     # must not depend on the hit count.
     $hits = [System.Collections.Generic.List[PSCustomObject]]::new()
-    $truncated = $false
+    $total = 0
+    $fileCounts = @{}
     foreach ($f in $files) {
-        if ($hits.Count -ge $MaxResults) { $truncated = $true; break }
         $matches = Select-String -LiteralPath $f -Pattern $Pattern `
             -SimpleMatch:$SimpleMatch -Context $Context -ErrorAction SilentlyContinue
         foreach ($m in $matches) {
-            if ($hits.Count -ge $MaxResults) { $truncated = $true; break }
-            $ctx = ''
-            if ($Context -gt 0 -and $m.Context) {
-                $ctx = (($m.Context.PreContext + $m.Context.PostContext) -join "`n")
+            $total++
+            $hitPath = [System.IO.Path]::GetRelativePath($root, $m.Path)
+            $fileCounts[$hitPath] = [int]$fileCounts[$hitPath] + 1
+            $idx = $total - 1
+            if ($idx -ge $Skip -and $hits.Count -lt $MaxResults) {
+                $ctx = ''
+                if ($Context -gt 0 -and $m.Context) {
+                    $ctx = (($m.Context.PreContext + $m.Context.PostContext) -join "`n")
+                }
+                $hits.Add([PSCustomObject]@{
+                    Path       = $hitPath
+                    LineNumber = $m.LineNumber
+                    Line       = $m.Line.Trim()
+                    Context    = $ctx
+                })
             }
-            $hits.Add([PSCustomObject]@{
-                Path       = [System.IO.Path]::GetRelativePath($root, $m.Path)
-                LineNumber = $m.LineNumber
-                Line       = $m.Line.Trim()
-                Context    = $ctx
-            })
         }
     }
-    if ($truncated) {
+    if ($total -eq 0) {
+        # No hits: no note, just the empty array.
+    }
+    elseif ($Skip -ge $total) {
         $hits.Add([PSCustomObject]@{
             Path       = '...'
             LineNumber = 0
-            Line       = "... (truncated: showing first $MaxResults matches; narrow -Pattern, -FilePattern, or -Path)"
+            Line       = "... (no more matches: -Skip $Skip is past the $total total hits)"
+            Context    = ''
+        })
+    }
+    elseif ($total -gt $Skip + $hits.Count) {
+        $from = $Skip + 1
+        $to = $Skip + $hits.Count
+        $top = $fileCounts.GetEnumerator() | Sort-Object Value -Descending |
+            Select-Object -First 5 | ForEach-Object { "$($_.Key) ($($_.Value))" }
+        $hits.Add([PSCustomObject]@{
+            Path       = '...'
+            LineNumber = 0
+            Line       = "... (truncated: showing $from-$to of $total hits; " +
+                "hardest-hit: $($top -join ', '); use -Skip/-MaxResults to page, or narrow -Pattern/-FilePattern/-Path)"
             Context    = ''
         })
     }

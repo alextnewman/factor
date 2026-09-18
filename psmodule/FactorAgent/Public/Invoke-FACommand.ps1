@@ -22,6 +22,9 @@ function Invoke-FACommand {
         Runs cargo build in the 'build' terminal.
     .OUTPUTS
         PSCustomObject with Terminal, ExitCode, Output, DurationMs, Preview.
+        Output is capped at the last 2000 lines with a truncation note, so a
+        verbose build or test run can't flood the agent's context; the tail
+        is kept because that's where errors and summaries land.
     #>
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -62,10 +65,21 @@ function Invoke-FACommand {
         if ($resp.PSObject.Properties.Name -contains 'error') {
             throw "Invoke-FACommand: terminal '$Terminal' reported: $($resp.error)"
         }
+        # No unbounded returns: cap output at the last 2000 lines. The tail
+        # is kept because errors and summaries land at the end of command
+        # output; the note goes first since the head is what's missing.
+        # Trailing blank lines (Out-String appends a final newline) are
+        # trimmed first so the line count is honest.
+        $outText = ([string]$resp.output).TrimEnd("`r", "`n")
+        $outLines = $outText -split "`r?`n"
+        if ($outLines.Count -gt 2000) {
+            $note = "... (output truncated: showing last 2000 of $($outLines.Count) lines)"
+            $outText = @($note) + @($outLines | Select-Object -Last 2000) -join "`n"
+        }
         [PSCustomObject]@{
             Terminal   = $Terminal
             ExitCode   = [int]$resp.exitCode
-            Output     = [string]$resp.output
+            Output     = $outText
             DurationMs = [long]$resp.durationMs
             Preview    = $preview
         }

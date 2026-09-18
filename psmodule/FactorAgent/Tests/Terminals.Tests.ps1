@@ -46,6 +46,15 @@ Describe 'Terminal lifecycle' {
             Should -Throw "*does not exist*"
     }
 
+    It 'truncates long output, keeping the tail' {
+        $r = Invoke-FACommand -Command "1..3000 | ForEach-Object { 'line ' + `$_ }"
+        $lines = $r.Output -split "`n"
+        $lines.Count | Should -Be 2001
+        $lines[0] | Should -Match 'output truncated.*last 2000 of 3000 lines'
+        $lines[-1].Trim() | Should -Be 'line 3000'
+        Remove-FATerminal -Name 'default'
+    }
+
     It 'duplicate names are refused' {
         New-FATerminal -Name 'pester-dup' | Out-Null
         { New-FATerminal -Name 'pester-dup' } | Should -Throw '*already exists*'
