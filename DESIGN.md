@@ -625,6 +625,17 @@ Engine obligations (some already true, some future work):
 Open: the operator's role in game terms (spectator? DM?) — the true client's
 central design question.
 
+**Roles.** The world is real and stateful. Within it, the operator is the
+mage and the model is the summoned golem. The mage holds intent and
+authority but acts indirectly — through words (prompts), names (precise
+specifications), and the binding circle (the sandbox: it holds or it
+doesn't). The golem is tireless, powerful, and perfectly literal; it does
+exactly what it is told, which is its power and its characteristic failure
+mode. So the harness is written for a literalist: protocols a golem can't
+misread, and the Judgment Gate set where the mage's veto belongs — before
+effects, not after. (In the old story the golem is animated by *emet*,
+truth, set upon its forehead. Ours too.)
+
 **Context contract** — what "enough context" means, per event, so the deeper
 visualization stays possible without a wire change later:
 
