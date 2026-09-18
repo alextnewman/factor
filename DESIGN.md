@@ -552,7 +552,8 @@ decorators a home, so nothing is repeated memetically.
 Two audiences, two renderings. The model gets the incantation: raw
 PowerShell (`Read-FAFile -Path crates/factoragent/tests/m1_bridge.rs`),
 precise and unambiguous — the golem reads exactly what is written. The
-human gets a generic action view: `Read m1_bridge.rs`. Both derive from the
+human gets a generic action view: `Read crates/factoragent/tests/m1_bridge.rs`.
+Both derive from the
 same invocation; neither is a paraphrase of the other.
 
 - The print form lives with the tool: a `.PRINTFORM` comment-based help
@@ -693,6 +694,15 @@ visualization stays possible without a wire change later:
 The world graph itself is reconstructed from survey/INDEX events already in
 the log — no new event type yet. A normal UI remains fine; this contract
 only guarantees the deeper view is never priced out of the wire.
+
+**Views.** The world is one; cameras differ. The Game View renders the
+realized map — rooms, glyphs, the session's history written onto the world.
+The textual view renders the collapsed form: the traversal as a single
+trail-line with the actor's mark traveling it — expressive and dynamic
+(the motion through the files is visible), but neither arcane (no concepts
+the operator doesn't already have) nor expansive (no cumulative object
+dumps). Each camera shows what its medium can carry; neither is the
+territory.
 
 ## 7. Security model
 
