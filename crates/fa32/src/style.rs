@@ -265,7 +265,16 @@ fn term_size_os() -> Option<(usize, usize)> {
 /// 1 cell in Cascadia/Windows Terminal; terminals that disagree may misalign
 /// the gate frame by a cell — accepted for v1.
 pub fn disp_width(s: &str) -> usize {
-    s.chars().map(|c| if is_wide(c) { 2 } else { 1 }).sum()
+    s.chars().map(char_width).sum()
+}
+
+/// Display width of one char: 2 for wide (CJK) glyphs, 1 otherwise.
+pub fn char_width(c: char) -> usize {
+    if is_wide(c) {
+        2
+    } else {
+        1
+    }
 }
 
 fn is_wide(c: char) -> bool {
@@ -285,9 +294,32 @@ fn is_wide(c: char) -> bool {
 }
 
 /// Word-wrap `text` to `max` display columns (greedy, word-based; overlong
-/// words are hard-broken). Used by the approval gate so complete forms wrap
-/// instead of truncating.
+/// words are hard-broken). Leading indentation is preserved — the gate shows
+/// literal executable content, and indentation is content. Used by the
+/// approval gate so complete forms wrap instead of truncating.
 pub fn wrap_text(text: &str, max: usize) -> Vec<String> {
+    let max = max.max(10);
+    // Preserve leading indentation: wrap the body in the remaining width,
+    // then re-attach the indent to every produced line.
+    let indent_len = text.len() - text.trim_start_matches(' ').len();
+    let (pad, body) = text.split_at(indent_len);
+    let body_max = max.saturating_sub(disp_width(pad)).max(10);
+    let mut lines = wrap_core(body, body_max);
+    if pad.is_empty() {
+        return lines;
+    }
+    for line in lines.iter_mut() {
+        let mut p = String::with_capacity(pad.len() + line.len());
+        p.push_str(pad);
+        p.push_str(line);
+        *line = p;
+    }
+    lines
+}
+
+/// The word-wrapping core: no leading-whitespace handling. `wrap_text` is
+/// the entry point.
+fn wrap_core(text: &str, max: usize) -> Vec<String> {
     let max = max.max(10);
     let mut lines: Vec<String> = Vec::new();
     let mut cur = String::new();
@@ -322,12 +354,137 @@ pub fn wrap_text(text: &str, max: usize) -> Vec<String> {
     lines
 }
 
+/// Word-wrap runs of `(ink, text)` to `max` display columns, keeping each
+/// character's ink across wraps. Returns lines of `(ink, text)` runs with
+/// adjacent same-ink runs merged.
+///
+/// The full-screen renderer needs this (rather than wrapping painted text)
+/// because ANSI escape bytes would corrupt naive width measurement.
+/// Embedded newlines are hard breaks; overlong words are hard-split.
+pub fn wrap_spans(spans: &[(Ink, &str)], max: usize) -> Vec<Vec<(Ink, String)>> {
+    let max = max.max(1);
+    // Split into paragraphs on newlines, keeping per-char ink.
+    let mut paras: Vec<Vec<(Ink, char)>> = vec![Vec::new()];
+    for (ink, text) in spans {
+        for ch in text.chars() {
+            if ch == '\n' {
+                paras.push(Vec::new());
+            } else {
+                paras.last_mut().expect("paragraph").push((*ink, ch));
+            }
+        }
+    }
+    let mut out: Vec<Vec<(Ink, String)>> = Vec::new();
+    for para in paras {
+        // Tokenize into words on spaces.
+        let mut words: Vec<Vec<(Ink, char)>> = Vec::new();
+        let mut cur: Vec<(Ink, char)> = Vec::new();
+        for (ink, ch) in para {
+            if ch == ' ' {
+                if !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                }
+            } else {
+                cur.push((ink, ch));
+            }
+        }
+        if !cur.is_empty() {
+            words.push(cur);
+        }
+        // Greedy pack; each line is a list of words.
+        let mut lines: Vec<Vec<Vec<(Ink, char)>>> = Vec::new();
+        let mut line: Vec<Vec<(Ink, char)>> = Vec::new();
+        let mut width = 0usize;
+        for word in words {
+            if word_width(&word) > max {
+                if !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                    width = 0;
+                }
+                let mut chunks = split_word(&word, max);
+                if let Some(last) = chunks.pop() {
+                    for c in chunks {
+                        lines.push(vec![c]);
+                    }
+                    width = word_width(&last);
+                    line.push(last);
+                }
+                continue;
+            }
+            let ww = word_width(&word);
+            let need = if line.is_empty() { ww } else { width + 1 + ww };
+            if need > max {
+                lines.push(std::mem::take(&mut line));
+                width = 0;
+            }
+            if !line.is_empty() {
+                width += 1; // the separating space
+            }
+            width += ww;
+            line.push(word);
+        }
+        if !line.is_empty() || lines.is_empty() {
+            lines.push(line);
+        }
+        // Flatten each line back to merged ink runs.
+        for line_words in lines {
+            let mut chars: Vec<(Ink, char)> = Vec::new();
+            for (i, word) in line_words.into_iter().enumerate() {
+                if i > 0 {
+                    let ink = chars
+                        .last()
+                        .map(|(k, _)| *k)
+                        .unwrap_or_else(|| word.first().map(|(k, _)| *k).unwrap_or(Ink::Text));
+                    chars.push((ink, ' '));
+                }
+                chars.extend(word);
+            }
+            let mut runs: Vec<(Ink, String)> = Vec::new();
+            for (ink, ch) in chars {
+                match runs.last_mut() {
+                    Some((k, s)) if *k == ink => s.push(ch),
+                    _ => runs.push((ink, ch.to_string())),
+                }
+            }
+            if runs.is_empty() {
+                runs.push((Ink::Text, String::new()));
+            }
+            out.push(runs);
+        }
+    }
+    out
+}
+
+fn word_width(word: &[(Ink, char)]) -> usize {
+    word.iter().map(|(_, c)| char_width(*c)).sum()
+}
+
+/// Split a word into chunks each at most `max` display columns.
+fn split_word(word: &[(Ink, char)], max: usize) -> Vec<Vec<(Ink, char)>> {
+    let mut chunks = Vec::new();
+    let mut cur = Vec::new();
+    let mut w = 0usize;
+    for &(ink, ch) in word {
+        let cw = char_width(ch);
+        if w + cw > max && !cur.is_empty() {
+            chunks.push(std::mem::take(&mut cur));
+            w = 0;
+        }
+        cur.push((ink, ch));
+        w += cw;
+    }
+    if !cur.is_empty() {
+        chunks.push(cur);
+    }
+    chunks
+}
+
 /// Split `s` into (head, tail) with head at most `max` display columns.
 fn split_at_width(s: &str, max: usize) -> (String, &str) {
     let mut w = 0usize;
     let mut idx = 0usize;
     for (i, c) in s.char_indices() {
-        let cw = if is_wide(c) { 2 } else { 1 };
+        let cw = char_width(c);
         if w + cw > max {
             break;
         }
@@ -421,5 +578,52 @@ mod tests {
         assert_eq!(wrap_text("", 10), vec![""]);
         // Widths below the 10-column floor are treated as 10.
         assert_eq!(wrap_text("aa bb", 4), vec!["aa bb"]);
+    }
+
+    #[test]
+    fn wrap_text_preserves_leading_indentation() {
+        assert_eq!(wrap_text("    indented", 20), vec!["    indented"]);
+        // Indented lines still wrap within the width, indent included.
+        let lines = wrap_text("    aa bb cc dd ee ff", 14);
+        for l in &lines {
+            assert!(l.starts_with("    "), "{l:?}");
+            assert!(disp_width(l) <= 14, "{l:?}");
+        }
+        assert!(lines.len() > 1);
+    }
+
+    #[test]
+    fn wrap_spans_keeps_ink_across_wraps() {
+        let spans = vec![(Ink::Amber, "⚙ "), (Ink::Text, "hello world foo")];
+        let lines = wrap_spans(&spans, 10);
+        assert_eq!(lines.len(), 2);
+        assert_eq!(
+            lines[0],
+            vec![(Ink::Amber, "⚙ ".into()), (Ink::Text, "hello".into())]
+        );
+        assert_eq!(lines[1], vec![(Ink::Text, "world foo".into())]);
+        // Every rendered line fits the width.
+        for line in &lines {
+            let painted: String = line.iter().map(|(_, s)| s.as_str()).collect();
+            assert!(disp_width(&painted) <= 10, "{painted:?}");
+        }
+    }
+
+    #[test]
+    fn wrap_spans_splits_long_words_and_hard_breaks() {
+        let spans = vec![(Ink::Text, "abcdefghij\nklmnopqr")];
+        let lines = wrap_spans(&spans, 4);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|runs| runs.iter().map(|(_, s)| s.as_str()).collect())
+            .collect();
+        assert_eq!(texts, vec!["abcd", "efgh", "ij", "klmn", "opqr"]);
+    }
+
+    #[test]
+    fn wrap_spans_empty_is_one_empty_line() {
+        let lines = wrap_spans(&[], 20);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0], vec![(Ink::Text, String::new())]);
     }
 }

@@ -812,6 +812,50 @@ follows it.
   box art. `--color always` forces ANSI for capture. fa32 never paints a
   background in any scheme.
 
+#### 6.2.1 Full terminal takeover — [DECIDED] (2026-09-18)
+
+Styled interactive sessions own the whole canvas; the takeover is
+transactional and the fallback is honest line mode.
+
+- **Alternate-screen ownership.** `Screen::enter()` sets raw/console modes
+  *first*, then takes the alternate canvas. If mode setup fails the
+  terminal is untouched; if canvas takeover fails the mode guard is
+  dropped explicitly, restoring everything. The operator is never stranded
+  in the alternate screen with a hidden cursor. `Drop` restores console
+  modes, cursor, and the main screen even on panic — the operator's
+  scrollback is preserved.
+- **Fixed regions.** Row 0: top bar (session left, model/scheme right —
+  the session side truncates first, the bar is hard-clipped to the width
+  and never wraps). Rows 1..n-3: the Chronicle viewport (semantic runs,
+  width-sensitive wrap cache, Page Up/Down scroll, 5,000-line bound).
+  Row n-2: status — collapsed trail, working spinner, token readout —
+  hard-clipped to one row. Row n-1: the managed input row.
+- **Input horizontal viewport.** The input row never wraps into its
+  neighbors: a cursor-following window shows the slice around the cursor,
+  so massive pastes stay on one row and remain inspectable via cursor
+  movement. History (Up/Down), Home/End, word jumps, and Ctrl+C
+  (clear-then-quit) / Ctrl+D (quit) behave.
+- **Line-mode fallback.** `--message`, piped stdin, `NO_COLOR`,
+  `TERM=dumb`, or `--color never` stay in line mode: plain greppable
+  output, no takeover. EOF on piped stdin exits the REPL cleanly.
+- **The gate as modal interruption.** In takeover mode the approval gate
+  is a modal over the Chronicle: chain print forms prominent, previews as
+  verifiable detail, `[a]pprove · [d]eny · [e]dit args` footer. Unfinished
+  input is stashed while the modal is up and restored after the verdict.
+  The height-capped rows (and any spill file) are prepared once per
+  terminal size when the modal opens — not per keystroke — so an
+  overflowing gate writes exactly one spill file however long the
+  deliberation.
+- **Scale policy.** Wrapping handles horizontal scale; the viewport
+  handles vertical scale; spilling preserves completeness. No pager: a
+  pager would seize terminal ownership, complicate piped and approval
+  input, and add cross-platform lifecycle risk. The gate always shows the
+  complete executable text — width wraps it, height spills it to a file,
+  nothing is silently truncated. Newline/tab/CR hardening applies to every
+  rendering (styled modal, plain gate, spill) — one hardened path.
+- **Resize.** Width/height are re-read on every render; reflow happens on
+  the next key or server event (no explicit resize event).
+
 ## 7. Security model
 
 ### 7.1 MXC sandboxing — [DECIDED]

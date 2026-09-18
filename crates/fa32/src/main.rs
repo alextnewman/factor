@@ -17,8 +17,11 @@ use clap::{Parser, Subcommand};
 use fa_core::rpc::{endpoint, RpcClient, RpcHandler, RpcPeer};
 use serde_json::{json, Value};
 use std::sync::Mutex;
+use tokio::sync::{mpsc, oneshot};
 
+mod screen;
 mod style;
+mod tui;
 use style::{Ink, Style};
 
 #[derive(Parser)]
@@ -248,7 +251,17 @@ async fn run_session(opts: RunOpts) -> Result<()> {
         eprintln!("note: --dialect is ignored when joining a live session");
     }
 
-    let handler = ClientHandler::new(style);
+    // Full chrome on a real terminal; the honest line printer otherwise
+    // (piped, NO_COLOR, --color never, TERM=dumb, or a one-shot --message).
+    // (Cloned up front: `opts` is partially moved earlier in this fn.)
+    let message = opts.message.clone();
+    let model = opts.model.clone();
+    let scheme_name = opts.scheme.clone().unwrap_or_else(|| "ember".to_string());
+    let use_tui = message.is_none()
+        && std::io::IsTerminal::is_terminal(&std::io::stdin())
+        && !style.is_plain();
+    let (ui_tx, ui_rx) = mpsc::channel(64);
+    let handler = ClientHandler::new(style, use_tui.then(|| ui_tx.clone()));
     let client = match RpcClient::connect(&endpoint, handler).await {
         Ok(client) => client,
         Err(e) => {
@@ -261,20 +274,29 @@ async fn run_session(opts: RunOpts) -> Result<()> {
             return Err(e.into());
         }
     };
-    println!(
-        "{}",
-        style.paint(
-            Ink::Dim,
-            &format!("session {session_id} — type /quit to exit\n")
-        )
-    );
 
-    let outcome = if let Some(msg) = opts.message {
-        prompt_once(&client, &style, &msg)
-            .await
-            .map(|o| println!("\n{o}"))
+    let outcome = if use_tui {
+        match screen::Screen::enter() {
+            Ok(screen) => {
+                run_tui(
+                    screen,
+                    &client,
+                    &style,
+                    ui_tx,
+                    ui_rx,
+                    &session_id,
+                    &model,
+                    &scheme_name,
+                )
+                .await
+            }
+            Err(e) => {
+                eprintln!("note: full-screen unavailable ({e:#}); line mode");
+                run_line_mode(&client, &style, &session_id, message.as_deref()).await
+            }
+        }
     } else {
-        repl(&client, &style).await
+        run_line_mode(&client, &style, &session_id, message.as_deref()).await
     };
 
     // If we spawned the server, shut it down: graceful request first,
@@ -290,6 +312,96 @@ async fn run_session(opts: RunOpts) -> Result<()> {
         }
     }
     outcome
+}
+
+/// The honest line printer: every event is a line, the gate is a box.
+/// Used when stdout isn't a styled terminal, or for one-shot --message.
+async fn run_line_mode(
+    client: &RpcClient<ClientHandler>,
+    style: &Style,
+    session_id: &str,
+    message: Option<&str>,
+) -> Result<()> {
+    println!(
+        "{}",
+        style.paint(
+            Ink::Dim,
+            &format!("session {session_id} — type /quit to exit\n")
+        )
+    );
+
+    if let Some(msg) = message {
+        prompt_once(client, style, msg)
+            .await
+            .map(|o| println!("\n{o}"))
+    } else {
+        repl(client, style).await
+    }
+}
+
+/// The full chrome: alternate screen, managed regions, modal gate.
+/// The UI loop never blocks on a turn — prompts go out on a spawned task
+/// and everything (outcome, approval) comes back as events.
+async fn run_tui(
+    _screen: screen::Screen,
+    client: &RpcClient<ClientHandler>,
+    style: &Style,
+    ui_tx: mpsc::Sender<tui::UiEvent>,
+    mut ui_rx: mpsc::Receiver<tui::UiEvent>,
+    session_id: &str,
+    model: &str,
+    scheme: &str,
+) -> Result<()> {
+    let (key_tx, mut key_rx) = mpsc::channel(64);
+    let _input_thread = tui::spawn_input_thread(key_tx);
+    let mut view = tui::View::new(
+        session_id.to_string(),
+        model.to_string(),
+        scheme.to_string(),
+    );
+    let mut out = io::stdout();
+    tui::render(&mut view, style, &mut out)?;
+
+    loop {
+        tokio::select! {
+            key = key_rx.recv() => {
+                let key = key.unwrap_or(tui::Key::CtrlD);
+                match tui::handle_key(&mut view, key) {
+                    tui::KeyAction::None => {}
+                    tui::KeyAction::Redraw => {
+                        tui::render(&mut view, style, &mut out)?;
+                    }
+                    tui::KeyAction::Quit => break,
+                    tui::KeyAction::Submit(text) => {
+                        if text.trim() == "/quit" {
+                            break;
+                        }
+                        tui::render(&mut view, style, &mut out)?;
+                        let peer = client.peer().clone();
+                        let ui_tx = ui_tx.clone();
+                        tokio::spawn(async move {
+                            // The prompt result is a turn-end acknowledgement;
+                            // only a failure is worth a chronicle line.
+                            let outcome = match peer
+                                .request("session.prompt", json!({"text": text}))
+                                .await
+                            {
+                                Ok(_) => String::new(),
+                                Err(e) => format!("error: {e:#}"),
+                            };
+                            let _ = ui_tx.send(tui::UiEvent::Outcome(outcome)).await;
+                        });
+                    }
+                }
+            }
+            ev = ui_rx.recv() => {
+                let Some(ev) = ev else { break };
+                view.on_event(ev);
+                tui::render(&mut view, style, &mut out)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -348,9 +460,15 @@ async fn repl(client: &RpcClient<ClientHandler>, style: &Style) -> Result<()> {
         io::stdout().flush()?;
         let mut line = String::new();
         // Blocking stdin read: run it off-thread so the runtime stays alive.
-        let n = tokio::task::spawn_blocking(move || io::stdin().read_line(&mut line).map(|_| line))
-            .await??;
-        let line = n;
+        // The byte count matters: 0 means EOF (piped input done), which
+        // must break the loop, not spin on empty lines forever.
+        let (n, line) = tokio::task::spawn_blocking(move || {
+            io::stdin().read_line(&mut line).map(|n| (n, line))
+        })
+        .await??;
+        if n == 0 {
+            break;
+        }
         let text = line.trim();
         if text.is_empty() {
             continue;
@@ -374,14 +492,131 @@ struct ClientHandler {
     style: Style,
     /// Last room shown on the trail; the trail prints only on change.
     room: std::sync::Arc<Mutex<Option<String>>>,
+    /// When set, events go to the full-screen UI task instead of stdout.
+    ui: Option<mpsc::Sender<tui::UiEvent>>,
 }
 
 impl ClientHandler {
-    fn new(style: Style) -> Self {
+    fn new(style: Style, ui: Option<mpsc::Sender<tui::UiEvent>>) -> Self {
         Self {
             style,
             room: std::sync::Arc::new(Mutex::new(None)),
+            ui,
         }
+    }
+}
+
+/// Forward one notification to the full-screen UI task. Free function: the
+/// handler's `&self` borrow doesn't survive the async block's move, and the
+/// routing needs nothing from the handler itself.
+async fn handle_ui_event(
+    tx: &mpsc::Sender<tui::UiEvent>,
+    method: &str,
+    params: Value,
+    peer: &RpcPeer,
+) {
+    let send = |ev: tui::UiEvent| async {
+        let _ = tx.send(ev).await;
+    };
+    match method {
+        "event.agent_text" => {
+            if let Some(t) = params.get("text").and_then(|v| v.as_str()) {
+                send(tui::UiEvent::AgentText(t.to_string())).await;
+            }
+        }
+        "event.tool_call" => {
+            if let Some(calls) = params.get("calls").and_then(|v| v.as_array()) {
+                let items: Vec<tui::CallItem> = calls
+                    .iter()
+                    .map(|c| tui::CallItem {
+                        print: call_print(c),
+                        room: c.get("room").and_then(|v| v.as_str()).map(str::to_string),
+                        root: c.get("root").and_then(|v| v.as_str()).map(str::to_string),
+                    })
+                    .collect();
+                send(tui::UiEvent::ToolCall(items)).await;
+            }
+        }
+        "event.tool_result" => {
+            let ms = params
+                .get("duration_ms")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            send(tui::UiEvent::ToolResult {
+                print: result_print(&params),
+                ok: params.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
+                ms,
+                error: params
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            })
+            .await;
+        }
+        "event.model_usage" => {
+            send(tui::UiEvent::Usage {
+                prompt_tokens: params
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+                completion_tokens: params
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            })
+            .await;
+        }
+        "event.warning" => {
+            if let Some(t) = params.get("text").and_then(|v| v.as_str()) {
+                send(tui::UiEvent::Warning(t.to_string())).await;
+            }
+        }
+        "event.approval_requested" => {
+            let approval_id = params
+                .get("approvalId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let previews: Vec<String> = params
+                .get("previews")
+                .and_then(|v| v.as_array())
+                .map(|ps| {
+                    ps.iter()
+                        .map(|p| p.as_str().unwrap_or("?").to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let chain: Vec<tui::ChainItem> = params
+                .get("chain")
+                .and_then(|v| v.as_array())
+                .map(|cs| {
+                    cs.iter()
+                        .map(|c| tui::ChainItem {
+                            print: call_print(c),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let (resp_tx, resp_rx) = oneshot::channel();
+            send(tui::UiEvent::Approval {
+                chain,
+                previews,
+                respond: resp_tx,
+            })
+            .await;
+            // The modal answers; a dead UI denies (safe default).
+            let (decision, args) = match resp_rx.await.unwrap_or(tui::ApprovalDecision::Deny) {
+                tui::ApprovalDecision::Approve => ("approve", None),
+                tui::ApprovalDecision::Deny => ("deny", None),
+                tui::ApprovalDecision::Edit(v) => ("edit", Some(v)),
+            };
+            let mut resp = json!({"approvalId": approval_id, "decision": decision});
+            if let Some(args) = args {
+                resp["args"] = args;
+            }
+            let _ = peer.notify("event.approval_resolved", resp).await;
+        }
+        _ => {}
     }
 }
 
@@ -406,7 +641,13 @@ impl RpcHandler for ClientHandler {
         let peer = peer.clone();
         let style = self.style;
         let room = self.room.clone();
+        let ui = self.ui.clone();
         Box::pin(async move {
+            // Full-screen mode: the UI task owns all rendering.
+            if let Some(tx) = ui {
+                handle_ui_event(&tx, &method, params, &peer).await;
+                return;
+            }
             match method.as_str() {
                 "event.agent_text" => {
                     if let Some(t) = params.get("text").and_then(|v| v.as_str()) {
@@ -440,17 +681,7 @@ impl RpcHandler for ClientHandler {
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
                     // The human view: the same print form as the call line.
-                    let name = params
-                        .get("print")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| {
-                            params
-                                .get("name")
-                                .and_then(|v| v.as_str())
-                                .unwrap_or("?")
-                                .to_string()
-                        });
+                    let name = result_print(&params);
                     let ok = params.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                     if ok {
                         let sigil = style.paint(Ink::Green, "✓");
@@ -555,6 +786,22 @@ fn trail_line(room_state: &mut Option<String>, call: &Value, style: &Style) -> O
     Some(format!("  {mark}{rest}"))
 }
 
+/// One tool result's human-readable form: the engine-expanded print form
+/// (`print`), or the raw tool name for servers that predate print forms.
+fn result_print(params: &Value) -> String {
+    params
+        .get("print")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            params
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("?")
+                .to_string()
+        })
+}
+
 /// One tool call's human-readable form: the engine-expanded print form
 /// (`print`), or the raw `name + args` for servers that predate print forms.
 fn call_print(c: &Value) -> String {
@@ -577,24 +824,28 @@ fn ask_approval(
     previews: &[Value],
     chain: &[Value],
 ) -> (&'static str, Option<Value>) {
-    if style.is_plain() {
-        return ask_approval_plain(previews, chain);
-    }
-    let mut rows: Vec<(Ink, String)> = Vec::new();
-    for c in chain {
-        rows.push((Ink::Text, format!("⚙ {}", call_print(c))));
-    }
-    if !previews.is_empty() {
-        rows.push((Ink::Faint, "─ detail ─".to_string()));
-        for p in previews {
-            rows.push((Ink::Dim, format!("  {}", p.as_str().unwrap_or("?"))));
-        }
-    }
-    if rows.is_empty() {
-        rows.push((Ink::Dim, "(nothing to show)".to_string()));
-    }
-    draw_gate(style, &rows);
+    // One hardened gate for every rendering: rows are built newline-safe,
+    // wrapped, and height-capped (with spill) before any output. Plain mode
+    // keeps it border-free and greppable inside draw_gate; it never bypasses
+    // the row hardening.
+    draw_gate(style, &approval_rows_from_wire(chain, previews));
     ask_decision(chain.len())
+}
+
+/// Build the gate's content rows from wire values, via the shared
+/// row builder the TUI modal also uses.
+fn approval_rows_from_wire(chain: &[Value], previews: &[Value]) -> Vec<(Ink, String)> {
+    let chain: Vec<tui::ChainItem> = chain
+        .iter()
+        .map(|c| tui::ChainItem {
+            print: call_print(c),
+        })
+        .collect();
+    let previews: Vec<String> = previews
+        .iter()
+        .map(|p| p.as_str().unwrap_or("?").to_string())
+        .collect();
+    tui::approval_rows(&chain, &previews)
 }
 
 /// Build the gate's content rows from logical rows: split on newlines first
@@ -662,6 +913,36 @@ fn spill_gate_text(rows: &[(Ink, String)]) -> std::path::PathBuf {
 /// file whose path is shown, so no byte is hidden from the operator.
 fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
     let (cols, term_rows) = style::term_size();
+    let visible = cap_gate_rows(rows, cols, term_rows);
+
+    if style.is_plain() {
+        // Border-free and greppable: ASCII rules, no box art — but the rows
+        // above are already hardened (newline-safe, wrapped, height-capped).
+        let rule = "-".repeat(cols);
+        println!("\n-- approval requested {rule}");
+        for (_, line) in &visible {
+            println!("{line}");
+        }
+        println!("{rule}");
+        return;
+    }
+
+    println!("\n{}", gate_top(style, cols));
+    for (ink, line) in &visible {
+        println!("{}", gate_row(style, *ink, line, cols));
+    }
+    println!("{}", gate_bottom(style, cols));
+}
+
+/// Prepare the gate's visible rows: wrap to the frame width, cap the height
+/// so the veto prompt never scrolls off-screen, and spill the complete text
+/// to a file (shown in-frame) rather than silently truncating. Shared by the
+/// line-mode gate and the TUI modal.
+pub(crate) fn cap_gate_rows(
+    rows: &[(Ink, String)],
+    cols: usize,
+    term_rows: usize,
+) -> Vec<(Ink, String)> {
     let inner_max = cols.saturating_sub(4).max(20);
     let all = gate_rows(rows, inner_max);
     // Reserve frame + decision prompt so the gate never scrolls the veto
@@ -676,20 +957,11 @@ fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
             visible.push((Ink::Dim, if i == 0 { chunk } else { format!("  {chunk}") }));
         }
     }
+    visible
+}
 
-    if style.is_plain() {
-        println!(
-            "\n── approval requested {}",
-            "─".repeat(cols.saturating_sub("── approval requested ".len()))
-        );
-        for (_, line) in &visible {
-            println!("{line}");
-        }
-        println!("{}", "─".repeat(cols));
-        return;
-    }
-
-    let border = |s: &str| style.paint(Ink::Amber, s);
+/// The gate's top rule with the title knocked out, spanning the full canvas.
+pub(crate) fn gate_top(style: &Style, cols: usize) -> String {
     // Title knocked out of the top rule; the frame spans the full canvas.
     // (Char arithmetic, not byte length: every frame glyph is one cell.)
     let title = " approval requested ";
@@ -698,20 +970,29 @@ fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
     top.push_str(title);
     top.push_str(&"─".repeat(fill));
     top.push('╮');
-    println!("\n{}", border(&top));
-    for (ink, line) in &visible {
-        let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(line)));
-        println!(
-            "{} {} {}",
-            border("│"),
-            style.paint(*ink, &format!("{line}{pad}")),
-            border("│")
-        );
-    }
-    println!(
-        "{}",
-        border(&format!("╰{}╯", "─".repeat(cols.saturating_sub(2))))
-    );
+    style.paint(Ink::Amber, &top).to_string()
+}
+
+/// The gate's bottom rule.
+pub(crate) fn gate_bottom(style: &Style, cols: usize) -> String {
+    style
+        .paint(
+            Ink::Amber,
+            &format!("╰{}╯", "─".repeat(cols.saturating_sub(2))),
+        )
+        .to_string()
+}
+
+/// One framed content row: `│ {text padded} │`.
+pub(crate) fn gate_row(style: &Style, ink: Ink, line: &str, cols: usize) -> String {
+    let inner_max = cols.saturating_sub(4).max(20);
+    let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(line)));
+    format!(
+        "{} {} {}",
+        style.paint(Ink::Amber, "│"),
+        style.paint(ink, &format!("{line}{pad}")),
+        style.paint(Ink::Amber, "│")
+    )
 }
 
 /// The shared decision prompt, used by both gate renderings.
@@ -746,25 +1027,6 @@ fn ask_decision(chain_len: usize) -> (&'static str, Option<Value>) {
             _ => println!("answer a/d{}", if chain_len == 1 { "/e" } else { "" }),
         }
     }
-}
-
-/// Plain-mode approval UX: the original ASCII rendering, no box art.
-fn ask_approval_plain(previews: &[Value], chain: &[Value]) -> (&'static str, Option<Value>) {
-    println!("\n── approval requested ──────────────────────");
-    for c in chain {
-        println!("  • {}", call_print(c));
-    }
-    if !previews.is_empty() {
-        println!("  ── detail ──");
-        for p in previews {
-            println!("  • {}", p.as_str().unwrap_or("?"));
-        }
-    }
-    if chain.is_empty() && previews.is_empty() {
-        println!("  • (nothing to show)");
-    }
-    println!("────────────────────────────────────────────");
-    ask_decision(chain.len())
 }
 
 async fn doctor(with_llm: bool, llm_url: &str) -> Result<()> {
