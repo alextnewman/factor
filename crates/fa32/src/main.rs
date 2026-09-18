@@ -16,6 +16,10 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use fa_core::rpc::{endpoint, RpcClient, RpcHandler, RpcPeer};
 use serde_json::{json, Value};
+use std::sync::Mutex;
+
+mod style;
+use style::{Ink, Style};
 
 #[derive(Parser)]
 #[command(name = "fa32", about = "FactorAgent console client")]
@@ -61,6 +65,14 @@ enum Cmd {
         /// config/preferences.toml). Ignored when joining a live session.
         #[arg(long)]
         dialect: Option<String>,
+        /// Color scheme for the Textual Realist renderer: ember (default),
+        /// frost, parchment, ghost (your terminal's own palette).
+        #[arg(long)]
+        scheme: Option<String>,
+        /// Color mode: auto (default), always, never. NO_COLOR always wins;
+        /// non-TTY output degrades to plain greppable lines unless always.
+        #[arg(long, default_value = "auto")]
+        color: String,
     },
     /// Check the environment and (with --llm) the model backend.
     Doctor {
@@ -96,6 +108,8 @@ async fn async_main(cli: Cli) -> Result<()> {
             message,
             cwd,
             dialect,
+            scheme,
+            color,
         } => {
             run_session(RunOpts {
                 session_id,
@@ -110,6 +124,8 @@ async fn async_main(cli: Cli) -> Result<()> {
                 message,
                 cwd,
                 dialect,
+                scheme,
+                color,
             })
             .await
         }
@@ -134,6 +150,8 @@ struct RunOpts {
     message: Option<String>,
     cwd: Option<PathBuf>,
     dialect: Option<String>,
+    scheme: Option<String>,
+    color: String,
 }
 
 fn default_state_dir() -> PathBuf {
@@ -158,6 +176,9 @@ fn find_factoragent() -> Option<PathBuf> {
 }
 
 async fn run_session(opts: RunOpts) -> Result<()> {
+    // Fail fast on a bad --scheme/--color before spawning anything.
+    let style =
+        Style::detect(opts.scheme.as_deref(), &opts.color).map_err(|e| anyhow::anyhow!("{e}"))?;
     let state_dir = opts.state_dir.unwrap_or_else(default_state_dir);
     let session_id = opts.session_id.unwrap_or_else(uuid_simple);
     let session_dir = state_dir.join("sessions").join(&session_id);
@@ -173,9 +194,10 @@ async fn run_session(opts: RunOpts) -> Result<()> {
     if !endpoint::listening(&endpoint).await {
         // Fail fast on a bad --dialect rather than after spawning.
         if let Some(d) = &opts.dialect {
-            d.parse::<fa_core::dialect::ScriptDialect>().with_context(|| {
-                format!("invalid --dialect {d:?}; expected one of: full, brief, posix, windows")
-            })?;
+            d.parse::<fa_core::dialect::ScriptDialect>()
+                .with_context(|| {
+                    format!("invalid --dialect {d:?}; expected one of: full, brief, posix, windows")
+                })?;
         }
         let factoragent = find_factoragent().context(
             "no session socket and no `factoragent` binary next to fa32 (nor --session-id of a live session)",
@@ -226,7 +248,7 @@ async fn run_session(opts: RunOpts) -> Result<()> {
         eprintln!("note: --dialect is ignored when joining a live session");
     }
 
-    let handler = ClientHandler;
+    let handler = ClientHandler::new(style);
     let client = match RpcClient::connect(&endpoint, handler).await {
         Ok(client) => client,
         Err(e) => {
@@ -239,12 +261,20 @@ async fn run_session(opts: RunOpts) -> Result<()> {
             return Err(e.into());
         }
     };
-    println!("session {session_id} — type /quit to exit\n");
+    println!(
+        "{}",
+        style.paint(
+            Ink::Dim,
+            &format!("session {session_id} — type /quit to exit\n")
+        )
+    );
 
     let outcome = if let Some(msg) = opts.message {
-        prompt_once(&client, &msg).await.map(|o| println!("\n{o}"))
+        prompt_once(&client, &style, &msg)
+            .await
+            .map(|o| println!("\n{o}"))
     } else {
-        repl(&client).await
+        repl(&client, &style).await
     };
 
     // If we spawned the server, shut it down: graceful request first,
@@ -288,12 +318,16 @@ async fn wait_for_endpoint(pipe: &str, timeout: Duration) -> Result<()> {
     anyhow::bail!("timed out waiting for session pipe {pipe}")
 }
 
-async fn prompt_once(client: &RpcClient<ClientHandler>, text: &str) -> Result<String> {
+async fn prompt_once(
+    client: &RpcClient<ClientHandler>,
+    style: &Style,
+    text: &str,
+) -> Result<String> {
     // When stdin is a live terminal the console already echoed the typed
     // line above the prompt; re-printing it doubles the input. Only echo
     // for piped/non-interactive stdin, where nothing echoed it.
     if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        println!("you> {text}");
+        println!("{} {text}", style.paint(Ink::Amber, "you>"));
     }
     let v = client
         .peer()
@@ -308,9 +342,9 @@ async fn prompt_once(client: &RpcClient<ClientHandler>, text: &str) -> Result<St
         .to_string())
 }
 
-async fn repl(client: &RpcClient<ClientHandler>) -> Result<()> {
+async fn repl(client: &RpcClient<ClientHandler>, style: &Style) -> Result<()> {
     loop {
-        print!("you> ");
+        print!("{}", style.paint(Ink::Amber, "you> "));
         io::stdout().flush()?;
         let mut line = String::new();
         // Blocking stdin read: run it off-thread so the runtime stays alive.
@@ -324,19 +358,32 @@ async fn repl(client: &RpcClient<ClientHandler>) -> Result<()> {
         if text == "/quit" {
             break;
         }
-        match prompt_once(client, text).await {
+        match prompt_once(client, style, text).await {
             // The turn's agent text, tool calls, results, and usage were
             // already rendered live from the event stream; the RPC return
             // is just the turn-end ack, not a second copy of the text.
             Ok(_) => {}
-            Err(e) => eprintln!("error: {e:#}"),
+            Err(e) => eprintln!("{}", style.paint(Ink::Red, &format!("error: {e:#}"))),
         }
     }
     Ok(())
 }
 
 /// Renders server events; answers approval requests interactively.
-struct ClientHandler;
+struct ClientHandler {
+    style: Style,
+    /// Last room shown on the trail; the trail prints only on change.
+    room: std::sync::Arc<Mutex<Option<String>>>,
+}
+
+impl ClientHandler {
+    fn new(style: Style) -> Self {
+        Self {
+            style,
+            room: std::sync::Arc::new(Mutex::new(None)),
+        }
+    }
+}
 
 impl RpcHandler for ClientHandler {
     fn on_request<'a>(
@@ -357,22 +404,33 @@ impl RpcHandler for ClientHandler {
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
         let method = method.to_string();
         let peer = peer.clone();
+        let style = self.style;
+        let room = self.room.clone();
         Box::pin(async move {
             match method.as_str() {
                 "event.agent_text" => {
                     if let Some(t) = params.get("text").and_then(|v| v.as_str()) {
                         if !t.trim().is_empty() {
-                            println!("\nagent> {t}");
+                            println!("\n{} {t}", style.paint(Ink::Gold, "agent>"));
                         }
                     }
                 }
                 "event.tool_call" => {
                     if let Some(calls) = params.get("calls").and_then(|v| v.as_array()) {
+                        // The trail moves with the call, before the call line.
+                        let mut rs = room.lock().unwrap();
+                        for c in calls {
+                            if let Some(line) = trail_line(&mut rs, c, &style) {
+                                println!("{line}");
+                            }
+                        }
+                        drop(rs);
                         for c in calls {
                             // The human view: the engine-expanded print form.
                             // Falls back to the raw invocation for servers
                             // that predate print forms.
-                            println!("  ⚙ {}", call_print(c));
+                            let sigil = style.paint(Ink::Amber, "⚙");
+                            println!("  {sigil} {}", style.paint(Ink::Text, &call_print(c)));
                         }
                     }
                 }
@@ -395,13 +453,19 @@ impl RpcHandler for ClientHandler {
                         });
                     let ok = params.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                     if ok {
-                        println!("  ✓ {name} ({ms}ms)");
+                        let sigil = style.paint(Ink::Green, "✓");
+                        println!(
+                            "  {sigil} {} {}",
+                            style.paint(Ink::Text, &name),
+                            style.paint(Ink::Dim, &format!("({ms}ms)"))
+                        );
                     } else {
                         let err = params
                             .get("error")
                             .and_then(|v| v.as_str())
                             .unwrap_or("unknown error");
-                        println!("  ✗ {name}: {err}");
+                        let sigil = style.paint(Ink::Red, "✗");
+                        println!("  {sigil} {}: {err}", style.paint(Ink::Red, &name));
                     }
                 }
                 "event.model_usage" => {
@@ -427,11 +491,17 @@ impl RpcHandler for ClientHandler {
                         .and_then(|v| v.as_u64())
                         .map(|s| format!(", server prompt-eval {s}ms"))
                         .unwrap_or_default();
-                    println!("  · tokens {pt}+{ct}{cached} in {ms}ms{server}");
+                    println!(
+                        "{}",
+                        style.paint(
+                            Ink::Dim,
+                            &format!("  · tokens {pt}+{ct}{cached} in {ms}ms{server}")
+                        )
+                    );
                 }
                 "event.warning" => {
                     if let Some(t) = params.get("text").and_then(|v| v.as_str()) {
-                        println!("  ! {t}");
+                        println!("  {} {t}", style.paint(Ink::Amber, "!"));
                     }
                 }
                 "event.approval_requested" => {
@@ -450,7 +520,7 @@ impl RpcHandler for ClientHandler {
                         .and_then(|v| v.as_array())
                         .cloned()
                         .unwrap_or_default();
-                    let decision = ask_approval(&previews, &chain);
+                    let decision = ask_approval(&style, &previews, &chain);
                     let mut resp = json!({"approvalId": approval_id, "decision": decision.0});
                     if let Some(args) = decision.1 {
                         resp["args"] = args;
@@ -463,6 +533,28 @@ impl RpcHandler for ClientHandler {
     }
 }
 
+/// The collapsed trail: the agent's current room as a repo-rooted chain.
+/// Returns the line to print when the room changed since the last call.
+fn trail_line(room_state: &mut Option<String>, call: &Value, style: &Style) -> Option<String> {
+    let room = call.get("room").and_then(|v| v.as_str())?;
+    if room_state.as_deref() == Some(room) {
+        return None;
+    }
+    *room_state = Some(room.to_string());
+    let root = call
+        .get("root")
+        .and_then(|v| v.as_str())
+        .unwrap_or("workspace");
+    let chain = if room == "." {
+        root.to_string()
+    } else {
+        format!("{root} › {}", room.replace('/', " › "))
+    };
+    let mark = style.paint(Ink::Amber, "●");
+    let rest = style.paint(Ink::Dim, &format!(" {chain}"));
+    Some(format!("  {mark}{rest}"))
+}
+
 /// One tool call's human-readable form: the engine-expanded print form
 /// (`print`), or the raw `name + args` for servers that predate print forms.
 fn call_print(c: &Value) -> String {
@@ -470,29 +562,82 @@ fn call_print(c: &Value) -> String {
         return p.to_string();
     }
     let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-    let args =
-        serde_json::to_string(c.get("args").unwrap_or(&Value::Null)).unwrap_or_default();
+    let args = serde_json::to_string(c.get("args").unwrap_or(&Value::Null)).unwrap_or_default();
     format!("{name} {args}")
 }
 
 /// Interactive approval UX: the chain as print forms (the action the veto
-/// judges), WhatIf previews as verifiable detail, then approve/deny/edit.
-fn ask_approval(previews: &[Value], chain: &[Value]) -> (&'static str, Option<Value>) {
-    println!("\n── approval requested ──────────────────────");
+/// judges), previews as verifiable detail, then approve/deny/edit.
+///
+/// Styled mode draws the gate as a box — the one border that earns its
+/// meaning, marking the veto boundary. Plain mode keeps the old ASCII
+/// rendering: greppable lines, no box art.
+fn ask_approval(
+    style: &Style,
+    previews: &[Value],
+    chain: &[Value],
+) -> (&'static str, Option<Value>) {
+    if style.is_plain() {
+        return ask_approval_plain(previews, chain);
+    }
+    let mut rows: Vec<(Ink, String)> = Vec::new();
     for c in chain {
-        println!("  • {}", call_print(c));
+        rows.push((Ink::Text, format!("⚙ {}", call_print(c))));
     }
     if !previews.is_empty() {
-        println!("  ── detail ──");
+        rows.push((Ink::Faint, "─ detail ─".to_string()));
         for p in previews {
-            println!("  • {}", p.as_str().unwrap_or("?"));
+            rows.push((Ink::Dim, format!("  {}", p.as_str().unwrap_or("?"))));
         }
     }
-    if chain.is_empty() && previews.is_empty() {
-        println!("  • (nothing to show)");
+    if rows.is_empty() {
+        rows.push((Ink::Dim, "(nothing to show)".to_string()));
     }
-    println!("────────────────────────────────────────────");
-    let chain_len = chain.len();
+    draw_gate(style, &rows);
+    ask_decision(chain.len())
+}
+
+/// The veto boundary, drawn once: title knocked out of the top border,
+/// complete forms wrapping (never truncating) inside, width-aware.
+fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
+    let width = style::term_width().min(100);
+    let inner_max = width.saturating_sub(4).max(20);
+    let mut lines: Vec<(Ink, String)> = Vec::new();
+    for (ink, text) in rows {
+        for (i, chunk) in style::wrap_text(text, inner_max).into_iter().enumerate() {
+            lines.push((*ink, if i == 0 { chunk } else { format!("  {chunk}") }));
+        }
+    }
+    let content_w = lines
+        .iter()
+        .map(|(_, l)| style::disp_width(l))
+        .fold(0, usize::max)
+        .min(inner_max);
+    let border = |s: &str| style.paint(Ink::Amber, s);
+    // The frame is at least wide enough for its own title.
+    let total = (content_w + 4).max(style::disp_width(" approval requested ") + 6);
+    let mut top = String::from("╭─");
+    top.push_str(" approval requested ");
+    top.push_str(&"─".repeat(total.saturating_sub(style::disp_width(&top) + 1)));
+    top.push('╮');
+    println!("\n{}", border(&top));
+    for (ink, line) in &lines {
+        let pad = " ".repeat(content_w.saturating_sub(style::disp_width(line)));
+        println!(
+            "{} {} {}",
+            border("│"),
+            style.paint(*ink, &format!("{line}{pad}")),
+            border("│")
+        );
+    }
+    println!(
+        "{}",
+        border(&format!("╰{}╯", "─".repeat(total.saturating_sub(2))))
+    );
+}
+
+/// The shared decision prompt, used by both gate renderings.
+fn ask_decision(chain_len: usize) -> (&'static str, Option<Value>) {
     loop {
         print!("[a]pprove / [d]eny");
         if chain_len == 1 {
@@ -523,6 +668,25 @@ fn ask_approval(previews: &[Value], chain: &[Value]) -> (&'static str, Option<Va
             _ => println!("answer a/d{}", if chain_len == 1 { "/e" } else { "" }),
         }
     }
+}
+
+/// Plain-mode approval UX: the original ASCII rendering, no box art.
+fn ask_approval_plain(previews: &[Value], chain: &[Value]) -> (&'static str, Option<Value>) {
+    println!("\n── approval requested ──────────────────────");
+    for c in chain {
+        println!("  • {}", call_print(c));
+    }
+    if !previews.is_empty() {
+        println!("  ── detail ──");
+        for p in previews {
+            println!("  • {}", p.as_str().unwrap_or("?"));
+        }
+    }
+    if chain.is_empty() && previews.is_empty() {
+        println!("  • (nothing to show)");
+    }
+    println!("────────────────────────────────────────────");
+    ask_decision(chain.len())
 }
 
 async fn doctor(with_llm: bool, llm_url: &str) -> Result<()> {
@@ -594,4 +758,48 @@ fn uuid_simple() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("sess-{nanos:x}-{}", std::process::id())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn call(room: &str, root: &str) -> Value {
+        json!({"name": "Get-FATree", "args": {}, "room": room, "root": root})
+    }
+
+    #[test]
+    fn trail_prints_on_room_change_only() {
+        let style = Style::plain();
+        let mut state = None;
+        // First sighting prints.
+        let line = trail_line(&mut state, &call("crates", "winagent32"), &style).unwrap();
+        assert_eq!(line, "  ● winagent32 › crates");
+        // Same room: silent.
+        assert!(trail_line(&mut state, &call("crates", "winagent32"), &style).is_none());
+        // New room: prints the full chain from the root.
+        let line = trail_line(
+            &mut state,
+            &call("crates/factoragent/tests", "winagent32"),
+            &style,
+        )
+        .unwrap();
+        assert_eq!(line, "  ● winagent32 › crates › factoragent › tests");
+        // Workspace root room collapses to the root name.
+        let line = trail_line(&mut state, &call(".", "winagent32"), &style).unwrap();
+        assert_eq!(line, "  ● winagent32");
+    }
+
+    #[test]
+    fn trail_needs_room_and_root() {
+        let style = Style::plain();
+        let mut state = None;
+        // No room on the wire: no trail, no state change.
+        assert!(trail_line(&mut state, &json!({"name": "X"}), &style).is_none());
+        assert_eq!(state, None);
+        // No root: falls back to "workspace".
+        let line = trail_line(&mut state, &json!({"room": "crates"}), &style).unwrap();
+        assert_eq!(line, "  ● workspace › crates");
+    }
 }

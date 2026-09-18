@@ -246,12 +246,14 @@ dependencies = [
  "anyhow",
  "clap",
  "fa-core",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "windows-sys",
 ]
 
 [[package]]

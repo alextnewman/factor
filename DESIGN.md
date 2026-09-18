@@ -800,7 +800,17 @@ follows it.
   traversal-progress events — not per-tool renderer lore. In-place mark
   movement when interactive; one settled line when piped. Progress-event
   design is the remaining engine slice; the renderer contract is: a moving
-  mark over stable room identity, no visited-object dumps.
+  mark over stable room identity, no visited-object dumps. (Status
+  2026-09-18: the wire carries explicit `room` + `root` on live
+  `event.tool_call`/`event.tool_result`; fa-core derives the room from
+  generic path-shape rules — existing file → parent, directory → itself,
+  nonexistent → nearest ancestor, command text and globs ignored.)
+- **Operator binding.** `fa32 run --scheme ember|frost|parchment|ghost`
+  `--color auto|always|never`. A misspelled scheme fails fast, before any
+  spawn. `NO_COLOR`, `--color never`, non-TTY, or `TERM=dumb` degrade to
+  plain greppable lines — the ASCII gate keeps the veto readable without
+  box art. `--color always` forces ANSI for capture. fa32 never paints a
+  background in any scheme.
 
 ## 7. Security model
 

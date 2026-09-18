@@ -248,6 +248,10 @@ async fn async_main(cli: Cli) -> Result<()> {
     let agent = Arc::new(tokio::sync::Mutex::new(agent_loop));
 
     let stopping = Arc::new(AtomicBool::new(false));
+    let root_name = cwd
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "workspace".to_string());
     let handler = SessionHandler {
         agent,
         socket_approver,
@@ -255,6 +259,8 @@ async fn async_main(cli: Cli) -> Result<()> {
         session_id: session_id.clone(),
         stopping: stopping.clone(),
         print_forms,
+        workspace_root: cwd.clone(),
+        root_name,
     };
     #[cfg(unix)]
     let server = RpcServer::bind(&sock_path, handler).await?;
@@ -362,6 +368,8 @@ struct SessionHandler {
     session_id: String,
     stopping: Arc<AtomicBool>,
     print_forms: HashMap<String, String>,
+    workspace_root: PathBuf,
+    root_name: String,
 }
 
 impl RpcHandler for SessionHandler {
@@ -379,6 +387,8 @@ impl RpcHandler for SessionHandler {
         let db = self.db.clone();
         let session_id = self.session_id.clone();
         let print_forms = self.print_forms.clone();
+        let workspace_root = self.workspace_root.clone();
+        let root_name = self.root_name.clone();
         Box::pin(async move {
             match method.as_str() {
                 "session.prompt" => {
@@ -396,8 +406,13 @@ impl RpcHandler for SessionHandler {
                     });
                     let outcome = {
                         let mut agent = agent.lock().await;
+                        let ctx = EmitCtx {
+                            print_forms: &print_forms,
+                            workspace_root: &workspace_root,
+                            root_name: &root_name,
+                        };
                         let r = agent
-                            .run_prompt(&text, &|ev| emit_to_peer(&peer, &print_forms, ev))
+                            .run_prompt(&text, &|ev| emit_to_peer(&peer, &ctx, ev))
                             .await
                             .map_err(|e| e.to_string());
                         socket_approver.unbind();
@@ -456,8 +471,19 @@ impl RpcHandler for SessionHandler {
 /// Serialize loop events onto the wire in order. This is awaited (not
 /// spawned) so notifications always land before the session.prompt
 /// response that follows them on the same stream.
-async fn emit_to_peer(peer: &RpcPeer, print_forms: &HashMap<String, String>, ev: LoopEvent) {
+/// Context the emitter needs beyond the event itself: the workspace the
+/// session acts in, for generic room derivation (§6.1 context contract).
+struct EmitCtx<'a> {
+    print_forms: &'a HashMap<String, String>,
+    workspace_root: &'a PathBuf,
+    root_name: &'a str,
+}
+
+async fn emit_to_peer(peer: &RpcPeer, ctx: &EmitCtx<'_>, ev: LoopEvent) {
     let peer = peer.clone();
+    let room_of = |args: &serde_json::Map<String, Value>| {
+        fa_core::room::room_for_args(args, ctx.workspace_root, ctx.workspace_root)
+    };
     let (method, params) = match ev {
         LoopEvent::AgentText(t) => ("event.agent_text", json!({"text": t})),
         LoopEvent::ToolCalls(calls) => (
@@ -465,7 +491,11 @@ async fn emit_to_peer(peer: &RpcPeer, print_forms: &HashMap<String, String>, ev:
             json!({"calls": calls.iter().map(|c| json!({
                 "name": c.name,
                 "args": c.args,
-                "print": print_text(&c.name, &c.args, print_forms),
+                "print": print_text(&c.name, &c.args, ctx.print_forms),
+                // Generic room: the directory-scope this call acts in, so
+                // cameras can render the trail without per-tool knowledge.
+                "room": room_of(&c.args),
+                "root": ctx.root_name,
             })).collect::<Vec<_>>()}),
         ),
         LoopEvent::ToolResult(r) => (
@@ -473,10 +503,12 @@ async fn emit_to_peer(peer: &RpcPeer, print_forms: &HashMap<String, String>, ev:
             json!({
                 "name": r.call.name,
                 "args": r.call.args,
-                "print": print_text(&r.call.name, &r.call.args, print_forms),
+                "print": print_text(&r.call.name, &r.call.args, ctx.print_forms),
                 "ok": r.ok,
                 "error": r.error,
                 "duration_ms": r.duration_ms,
+                "room": room_of(&r.call.args),
+                "root": ctx.root_name,
             }),
         ),
         LoopEvent::Warning(w) => ("event.warning", json!({"text": w})),

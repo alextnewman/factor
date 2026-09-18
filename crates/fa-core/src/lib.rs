@@ -13,6 +13,7 @@ pub mod executor;
 pub mod manifest;
 pub mod prompt;
 pub mod protocol;
+pub mod room;
 pub mod rpc;
 pub mod session;
 
