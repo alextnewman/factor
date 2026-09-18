@@ -597,32 +597,110 @@ fn ask_approval(
     ask_decision(chain.len())
 }
 
-/// The veto boundary, drawn once: title knocked out of the top border,
-/// complete forms wrapping (never truncating) inside, width-aware.
-fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
-    let width = style::term_width().min(100);
-    let inner_max = width.saturating_sub(4).max(20);
-    let mut lines: Vec<(Ink, String)> = Vec::new();
+/// Build the gate's content rows from logical rows: split on newlines first
+/// (PowerShell text is multi-line — a raw `\n` inside a row would break the
+/// frame), strip `\r`, expand tabs, then wrap each physical line. Pure and
+/// unit-tested: no returned row contains a newline or exceeds `inner_max`.
+fn gate_rows(rows: &[(Ink, String)], inner_max: usize) -> Vec<(Ink, String)> {
+    // Continuation lines carry a 2-space indent, so wrap 2 short of the
+    // frame: the width invariant below must hold for every returned row.
+    let wrap_w = inner_max.saturating_sub(2).max(10);
+    let mut out = Vec::new();
     for (ink, text) in rows {
-        for (i, chunk) in style::wrap_text(text, inner_max).into_iter().enumerate() {
-            lines.push((*ink, if i == 0 { chunk } else { format!("  {chunk}") }));
+        for physical in text.split('\n') {
+            let physical = expand_tabs(physical.trim_end_matches('\r'));
+            for (i, chunk) in style::wrap_text(&physical, wrap_w).into_iter().enumerate() {
+                out.push((*ink, if i == 0 { chunk } else { format!("  {chunk}") }));
+            }
         }
     }
-    let content_w = lines
-        .iter()
-        .map(|(_, l)| style::disp_width(l))
-        .fold(0, usize::max)
-        .min(inner_max);
+    out
+}
+
+/// Expand tabs to the next multiple-of-8 stop so tabbed content can't
+/// ragged-edge the frame. Display-only; the spilled bytes keep raw tabs.
+fn expand_tabs(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut col = 0usize;
+    let mut buf = [0u8; 4];
+    for c in s.chars() {
+        if c == '\t' {
+            let n = 8 - (col % 8);
+            out.push_str(&" ".repeat(n));
+            col += n;
+        } else {
+            col += style::disp_width(c.encode_utf8(&mut buf));
+            out.push(c);
+        }
+    }
+    out
+}
+
+static GATE_SPILL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Spill the gate's complete logical rows to a temp file so a height-capped
+/// gate never silently hides bytes the veto is judging. Returns the path.
+fn spill_gate_text(rows: &[(Ink, String)]) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "fa32-gate-{}-{}.txt",
+        std::process::id(),
+        GATE_SPILL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut text = String::new();
+    for (_, row) in rows {
+        text.push_str(row);
+        text.push('\n');
+    }
+    let _ = std::fs::write(&path, text);
+    path
+}
+
+/// The veto boundary, drawn once, full canvas width: title knocked out of
+/// the top border, multi-line content as separate framed rows, long lines
+/// wrapped (never truncated, never leaking past the frame). Massive inputs
+/// are height-capped to keep the veto on screen; the overflow spills to a
+/// file whose path is shown, so no byte is hidden from the operator.
+fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
+    let (cols, term_rows) = style::term_size();
+    let inner_max = cols.saturating_sub(4).max(20);
+    let all = gate_rows(rows, inner_max);
+    // Reserve frame + decision prompt so the gate never scrolls the veto
+    // off-screen; floor keeps tiny terminals usable.
+    let max_rows = term_rows.saturating_sub(10).max(10);
+    let overflow = all.len().saturating_sub(max_rows);
+    let mut visible: Vec<(Ink, String)> = all.iter().take(max_rows).cloned().collect();
+    if overflow > 0 {
+        let path = spill_gate_text(rows);
+        let note = format!("… {overflow} more lines — full text: {}", path.display());
+        for (i, chunk) in style::wrap_text(&note, inner_max).into_iter().enumerate() {
+            visible.push((Ink::Dim, if i == 0 { chunk } else { format!("  {chunk}") }));
+        }
+    }
+
+    if style.is_plain() {
+        println!(
+            "\n── approval requested {}",
+            "─".repeat(cols.saturating_sub("── approval requested ".len()))
+        );
+        for (_, line) in &visible {
+            println!("{line}");
+        }
+        println!("{}", "─".repeat(cols));
+        return;
+    }
+
     let border = |s: &str| style.paint(Ink::Amber, s);
-    // The frame is at least wide enough for its own title.
-    let total = (content_w + 4).max(style::disp_width(" approval requested ") + 6);
+    // Title knocked out of the top rule; the frame spans the full canvas.
+    // (Char arithmetic, not byte length: every frame glyph is one cell.)
+    let title = " approval requested ";
+    let fill = cols.saturating_sub(3 + title.len() + 1); // ╭ ─ title ─…─ ╮
     let mut top = String::from("╭─");
-    top.push_str(" approval requested ");
-    top.push_str(&"─".repeat(total.saturating_sub(style::disp_width(&top) + 1)));
+    top.push_str(title);
+    top.push_str(&"─".repeat(fill));
     top.push('╮');
     println!("\n{}", border(&top));
-    for (ink, line) in &lines {
-        let pad = " ".repeat(content_w.saturating_sub(style::disp_width(line)));
+    for (ink, line) in &visible {
+        let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(line)));
         println!(
             "{} {} {}",
             border("│"),
@@ -632,7 +710,7 @@ fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
     }
     println!(
         "{}",
-        border(&format!("╰{}╯", "─".repeat(total.saturating_sub(2))))
+        border(&format!("╰{}╯", "─".repeat(cols.saturating_sub(2))))
     );
 }
 
@@ -801,5 +879,34 @@ mod tests {
         // No root: falls back to "workspace".
         let line = trail_line(&mut state, &json!({"room": "crates"}), &style).unwrap();
         assert_eq!(line, "  ● workspace › crates");
+    }
+
+    #[test]
+    fn gate_rows_split_newlines_and_never_exceed_width() {
+        // Multi-line PowerShell text becomes separate framed rows; \r is
+        // stripped (a raw \r would rewind the cursor mid-frame); tabs expand.
+        let rows = vec![
+            (Ink::Text, "Run `$x = 1\r\n$y = 2".to_string()),
+            (Ink::Dim, "a\tb".to_string()),
+        ];
+        let out = gate_rows(&rows, 20);
+        let texts: Vec<&str> = out.iter().map(|(_, s)| s.as_str()).collect();
+        assert!(texts.iter().any(|t| t.contains("$x = 1")));
+        assert!(texts.iter().any(|t| t.contains("$y = 2")));
+        assert!(!texts.iter().any(|t| t.contains('\n') || t.contains('\r')));
+        assert!(texts.iter().any(|t| t.contains("a       b"))); // tab → 7 spaces
+        for (_, line) in &out {
+            assert!(style::disp_width(line) <= 20, "row exceeds frame: {line:?}");
+        }
+    }
+
+    #[test]
+    fn gate_rows_wrap_long_words_without_leaking() {
+        let rows = vec![(Ink::Text, "x".repeat(100))];
+        let out = gate_rows(&rows, 20);
+        assert!(out.len() > 1);
+        for (_, line) in &out {
+            assert!(style::disp_width(line) <= 20, "row exceeds frame");
+        }
     }
 }

@@ -203,24 +203,34 @@ fn dumb_term() -> bool {
 
 /// Terminal width in columns for width-aware rendering (the gate frame).
 /// Falls back to 80 when undetectable; clamped to a sane range.
-pub fn term_width() -> usize {
-    term_width_os().unwrap_or(80).clamp(40, 160)
+/// Terminal size as (columns, rows). Columns clamp to 40–160, rows to
+/// 10–60; the probe fails (piped, redirected, dumb terminals) → (80, 24).
+pub fn term_size() -> (usize, usize) {
+    match term_size_os() {
+        Some((w, h)) => (w.clamp(40, 160), h.clamp(10, 60)),
+        None => (80, 24),
+    }
 }
 
 #[cfg(unix)]
-fn term_width_os() -> Option<usize> {
+fn term_size_os() -> Option<(usize, usize)> {
     // SAFETY: trivial ioctl with a stack winsize; no invariants to uphold.
     unsafe {
         let mut ws: libc::winsize = std::mem::zeroed();
         if libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut ws) == 0 && ws.ws_col > 0 {
-            return Some(ws.ws_col as usize);
+            let h = if ws.ws_row > 0 {
+                ws.ws_row as usize
+            } else {
+                24
+            };
+            return Some((ws.ws_col as usize, h));
         }
     }
     None
 }
 
 #[cfg(windows)]
-fn term_width_os() -> Option<usize> {
+fn term_size_os() -> Option<(usize, usize)> {
     use windows_sys::Win32::System::Console::{
         GetConsoleScreenBufferInfo, GetStdHandle, CONSOLE_SCREEN_BUFFER_INFO, STD_OUTPUT_HANDLE,
     };
@@ -235,8 +245,10 @@ fn term_width_os() -> Option<usize> {
             return None;
         }
         let w = info.srWindow.Right - info.srWindow.Left + 1;
+        let h = info.srWindow.Bottom - info.srWindow.Top + 1;
         if w > 0 {
-            Some(w as usize)
+            let h = if h > 0 { h as usize } else { 24 };
+            Some((w as usize, h))
         } else {
             None
         }
@@ -244,7 +256,7 @@ fn term_width_os() -> Option<usize> {
 }
 
 #[cfg(not(any(unix, windows)))]
-fn term_width_os() -> Option<usize> {
+fn term_size_os() -> Option<(usize, usize)> {
     None
 }
 
