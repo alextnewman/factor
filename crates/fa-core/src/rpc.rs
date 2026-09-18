@@ -81,10 +81,25 @@ pub mod endpoint {
 pub mod endpoint {
     use super::{BoxRead, BoxWrite};
     use crate::Result;
-    use tokio::net::windows::named_pipe::{ClientOptions, ServerOptions};
+    use std::time::{Duration, Instant};
+    use tokio::net::windows::named_pipe::{ClientOptions, NamedPipeServer, ServerOptions};
+
+    /// `ERROR_PIPE_BUSY` (231): `CreateFile` on a pipe whose instances are
+    /// all connected, or none of which is in `ConnectNamedPipe`. The
+    /// MSDN-sanctioned client answer is `WaitNamedPipe` + retry; tokio
+    /// exposes no `WaitNamedPipe`, so `connect` below does the same with
+    /// bounded backoff.
+    const ERROR_PIPE_BUSY: i32 = 231;
+    /// How long `connect` keeps retrying a busy pipe before giving up.
+    const CONNECT_RETRY_TIMEOUT: Duration = Duration::from_secs(10);
 
     pub struct Listener {
         name: String,
+        /// The instance currently waiting for the next client. `accept`
+        /// keeps this slot filled — the replacement is created *before*
+        /// the accepted instance is handed out — so a client never finds
+        /// "no listener".
+        pending: NamedPipeServer,
     }
 
     /// `\\.\pipe\WinAgent32\<session-id>` — the locked pipe naming.
@@ -98,29 +113,60 @@ pub mod endpoint {
     }
 
     pub async fn bind(name: &str) -> Result<Listener> {
+        // The first instance takes FILE_FLAG_FIRST_PIPE_INSTANCE: creation
+        // fails fast with ERROR_ACCESS_DENIED if the name is already owned
+        // (live server or squatter) instead of silently sharing it.
+        let pending = ServerOptions::new()
+            .first_pipe_instance(true)
+            .create(name)?;
         Ok(Listener {
             name: name.to_string(),
+            pending,
         })
     }
 
-    pub async fn accept(listener: &Listener) -> Result<(BoxRead, BoxWrite)> {
-        // One pipe instance per accepted client, mirroring the Unix
-        // accept loop. `connect` waits for the client; `split` gives
-        // owned halves over the single bidirectional handle.
-        let server = ServerOptions::new().create(&listener.name)?;
-        server.connect().await?;
-        let (rh, wh) = tokio::io::split(server);
+    pub async fn accept(listener: &mut Listener) -> Result<(BoxRead, BoxWrite)> {
+        // Wait for the next client on the pending instance...
+        listener.pending.connect().await?;
+        // ...then install the replacement BEFORE handing the connected
+        // instance out (MSDN multithreaded-pipe-server ordering). Without
+        // this, a client arriving in the handoff window gets
+        // ERROR_PIPE_BUSY.
+        let connected = std::mem::replace(
+            &mut listener.pending,
+            ServerOptions::new().create(&listener.name)?,
+        );
+        let (rh, wh) = tokio::io::split(connected);
         Ok((Box::pin(rh), Box::pin(wh)))
     }
 
     pub async fn connect(name: &str) -> Result<(BoxRead, BoxWrite)> {
-        let client = ClientOptions::new().open(name)?;
-        let (rh, wh) = tokio::io::split(client);
-        Ok((Box::pin(rh), Box::pin(wh)))
+        let start = Instant::now();
+        loop {
+            match ClientOptions::new().open(name) {
+                Ok(client) => {
+                    let (rh, wh) = tokio::io::split(client);
+                    return Ok((Box::pin(rh), Box::pin(wh)));
+                }
+                Err(e) if e.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
+                    // All instances connected right now — typically our own
+                    // `listening()` probe racing the real connect, or a
+                    // client landing in an accept handoff. Wait for a
+                    // listener the way WaitNamedPipe would.
+                    if start.elapsed() >= CONNECT_RETRY_TIMEOUT {
+                        return Err(e.into());
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
     }
 
     /// True if a server instance is accepting right now. Opening a pipe
-    /// with no listener fails immediately — no waiting involved.
+    /// with no listener fails immediately — no waiting involved. Note the
+    /// probe itself consumes one accept; `accept` replaces the instance
+    /// before returning, so probes are harmless.
     pub async fn listening(name: &str) -> bool {
         ClientOptions::new().open(name).is_ok()
     }
@@ -286,7 +332,13 @@ impl<H: RpcHandler + 'static> RpcServer<H> {
 
     /// Accept connections until `should_stop()` is true. Each connection
     /// gets its own read loop; the handler is shared.
-    pub async fn serve<F>(self, mut should_stop: F) -> Result<()>
+    ///
+    /// The stop condition is polled every 200 ms *without* cancelling the
+    /// in-flight accept: on Windows the accept future owns the listening
+    /// pipe instance, and dropping it deletes the listener — clients then
+    /// see ERROR_PIPE_BUSY. A `select!` that raced the two tripped exactly
+    /// that on session start.
+    pub async fn serve<F>(mut self, mut should_stop: F) -> Result<()>
     where
         F: FnMut() -> bool,
     {
@@ -294,16 +346,29 @@ impl<H: RpcHandler + 'static> RpcServer<H> {
             if should_stop() {
                 break;
             }
-            tokio::select! {
-                res = endpoint::accept(&self.listener) => {
-                    let Ok((rh, wh)) = res else { continue };
-                    let peer = RpcPeer::new(wh);
-                    let handler = self.handler.clone();
-                    tokio::spawn(async move {
-                        read_loop(rh, peer, handler).await;
-                    });
+            // One accept future per iteration, pinned across the stop-poll
+            // ticks: the timer only re-checks `should_stop()`, it never
+            // drops the accept.
+            let accept_fut = endpoint::accept(&mut self.listener);
+            tokio::pin!(accept_fut);
+            let accepted = loop {
+                tokio::select! {
+                    res = &mut accept_fut => break Some(res),
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {
+                        if should_stop() {
+                            break None;
+                        }
+                    }
                 }
-                _ = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+            };
+            let Some(res) = accepted else { break };
+            {
+                let Ok((rh, wh)) = res else { continue };
+                let peer = RpcPeer::new(wh);
+                let handler = self.handler.clone();
+                tokio::spawn(async move {
+                    read_loop(rh, peer, handler).await;
+                });
             }
         }
         Ok(())
