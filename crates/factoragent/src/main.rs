@@ -17,6 +17,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 use fa_bridge::{HostBridge, SessionEnv};
 use fa_core::approver::{ApprovalDecision, ApprovalRequest, Approver, ApproverRef, AutoApprover};
 use fa_core::backend::{LlamaCppBackend, LlmBackend, MockBackend};
+use fa_core::dialect::resolve_dialect;
 use fa_core::executor::{ErrorMode, Executor};
 use fa_core::manifest::load_manifest;
 use fa_core::prompt::{build_block_a, SessionFacts};
@@ -64,6 +65,10 @@ enum Cmd {
         /// Max agent turns per prompt (prototype default 25).
         #[arg(long, default_value_t = 25)]
         turn_cap: usize,
+        /// Script dialect for agent-written command text: full, brief, posix,
+        /// windows. Overrides config/preferences.toml; default full.
+        #[arg(long)]
+        dialect: Option<String>,
     },
 }
 
@@ -94,11 +99,13 @@ async fn async_main(cli: Cli) -> Result<()> {
         error_mode,
         cwd,
         turn_cap,
+        dialect,
     } = cli.cmd;
 
     let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let session_dir = state_dir.join("sessions").join(&session_id);
-    std::fs::create_dir_all(&session_dir)?;
+    let dialect = resolve_dialect(dialect.as_deref(), &state_dir)?;
+    tracing::info!("script dialect: {dialect}");    std::fs::create_dir_all(&session_dir)?;
     let lock_path = session_dir.join("session.lock");
     let db_path = session_dir.join("session.db");
     #[cfg(unix)]
@@ -227,6 +234,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         manifest_version: "0.1.0".into(),
         scope_notes: db.scope_all(&session_id)?,
         terminals: vec![],
+        dialect,
     };
     let mut agent_loop = AgentLoop::new(
         backend,

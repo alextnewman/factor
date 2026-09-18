@@ -7,6 +7,7 @@
 //!   Block C — conversation. Strictly append-only.
 //!   Suffix  — ephemeral nudges at the END. Never prepend.
 
+use crate::dialect::ScriptDialect;
 use crate::manifest::{render_tools, ToolSchema};
 
 #[derive(Debug, Clone)]
@@ -69,6 +70,9 @@ pub struct SessionFacts {
     pub manifest_version: String,
     pub scope_notes: Vec<(String, String)>,
     pub terminals: Vec<String>,
+    /// The vernacular the agent writes command text in (§4.15).
+    /// Stable per session, so Block B stays cache-friendly.
+    pub dialect: ScriptDialect,
 }
 
 /// Block A: system prompt + full tool manifest. Frozen per session.
@@ -98,6 +102,8 @@ pub fn build_block_b(facts: &SessionFacts) -> String {
             out.push_str(&format!("  - {k}: {v}\n"));
         }
     }
+    out.push('\n');
+    out.push_str(&facts.dialect.prompt_section());
     out
 }
 
@@ -147,6 +153,29 @@ pub fn render_tool_result(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_facts(dialect: ScriptDialect) -> SessionFacts {
+        SessionFacts {
+            session_id: "s1".into(),
+            cwd: "/work".into(),
+            error_mode: "stop".into(),
+            backend: "host".into(),
+            manifest_version: "0.1.0".into(),
+            scope_notes: vec![],
+            terminals: vec![],
+            dialect,
+        }
+    }
+
+    #[test]
+    fn block_b_carries_dialect_section() {
+        let b = build_block_b(&test_facts(ScriptDialect::Posix));
+        assert!(b.contains("## Script dialect: posix"));
+        assert!(b.contains("ls -> Get-ChildItem"));
+        let b = build_block_b(&test_facts(ScriptDialect::Full));
+        assert!(b.contains("## Script dialect: full"));
+        assert!(!b.contains("ls -> Get-ChildItem"));
+    }
 
     #[test]
     fn block_order_and_stability() {

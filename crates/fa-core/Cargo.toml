@@ -12,3 +12,4 @@ reqwest = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 fa-bridge = { path = "../fa-bridge" }
+toml = { workspace = true }

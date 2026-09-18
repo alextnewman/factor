@@ -7,6 +7,7 @@
 pub mod agent;
 pub mod approver;
 pub mod backend;
+pub mod dialect;
 pub mod error;
 pub mod executor;
 pub mod manifest;

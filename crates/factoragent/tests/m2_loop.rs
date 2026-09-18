@@ -11,10 +11,10 @@ use fa_bridge::{HostBridge, SessionEnv};
 use fa_core::agent::{AgentLoop, LoopEvent};
 use fa_core::approver::{ApprovalDecision, ApprovalRequest, Approver, ApproverRef, AutoApprover};
 use fa_core::backend::MockBackend;
+use fa_core::dialect::ScriptDialect;
 use fa_core::executor::{ErrorMode, Executor};
 use fa_core::manifest::load_manifest;
-use fa_core::prompt::{build_block_a, SessionFacts};
-use fa_core::session::SessionDb;
+use fa_core::prompt::{build_block_a, SessionFacts};use fa_core::session::SessionDb;
 use serde_json::{json, Map, Value};
 
 fn pwsh_present() -> bool {
@@ -79,7 +79,7 @@ impl Harness {
             .await
             .unwrap();
         let schemas = load_manifest(m.as_str().unwrap()).unwrap();
-        assert_eq!(schemas.len(), 10);
+        assert_eq!(schemas.len(), 11);
         let block_a = build_block_a(&schemas);
         let h = Self {
             work,
@@ -99,6 +99,7 @@ impl Harness {
             manifest_version: "0.1.0".into(),
             scope_notes: vec![],
             terminals: vec![],
+            dialect: ScriptDialect::Full,
         }
     }
 
@@ -110,6 +111,25 @@ impl Harness {
         auto_approve: bool,
         error_mode: ErrorMode,
     ) -> AgentLoop {
+        self.agent_with(
+            Arc::new(backend),
+            bridge,
+            approver,
+            auto_approve,
+            error_mode,
+            self.facts(),
+        )
+    }
+
+    fn agent_with(
+        &self,
+        backend: Arc<MockBackend>,
+        bridge: HostBridge,
+        approver: ApproverRef,
+        auto_approve: bool,
+        error_mode: ErrorMode,
+        facts: SessionFacts,
+    ) -> AgentLoop {
         let executor = Executor::new(
             bridge,
             self.db.clone(),
@@ -119,13 +139,13 @@ impl Harness {
             error_mode,
         );
         AgentLoop::new(
-            Arc::new(backend),
+            backend,
             "mock".into(),
             executor,
             self.db.clone(),
             self.session_id.clone(),
             self.block_a.clone(),
-            self.facts(),
+            facts,
         )
     }
 
@@ -455,5 +475,38 @@ async fn m2_edit_on_multicall_chain_fails_closed() {
         !t1.exists() && !t2.exists(),
         "failed-closed chain must touch nothing on disk"
     );
+    h.finish();
+}
+
+#[tokio::test]
+async fn m2_dialect_section_reaches_model() {
+    let Some((h, bridge)) = Harness::new("dialect").await else {
+        return;
+    };
+    let backend = Arc::new(MockBackend::new(vec!["Done.".to_string()]));
+    let mut facts = h.facts();
+    facts.dialect = ScriptDialect::Posix;
+    let mut agent = h.agent_with(
+        backend.clone(),
+        bridge,
+        Arc::new(AutoApprover),
+        true,
+        ErrorMode::StopAndReport,
+        facts,
+    );
+    agent
+        .run_prompt("hello", &silent)
+        .await
+        .expect("loop should succeed");
+    let seen = backend.seen_messages();
+    assert!(!seen.is_empty(), "model should have been called");
+    let system = &seen[0][0];
+    assert_eq!(system.role, "system");
+    assert!(
+        system.content.contains("## Script dialect: posix"),
+        "dialect section must reach the model"
+    );
+    assert!(system.content.contains("ls -> Get-ChildItem"));
+    assert!(system.content.contains("`ls -la` is WRONG"));
     h.finish();
 }

@@ -25,6 +25,8 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+// CLI command enum: Run is inherently the big variant; boxing it buys nothing.
+#[allow(clippy::large_enum_variant)]
 enum Cmd {
     /// Chat with a session (spawns `factoragent serve` if needed).
     Run {
@@ -54,6 +56,11 @@ enum Cmd {
         message: Option<String>,
         #[arg(long)]
         cwd: Option<PathBuf>,
+        /// Script dialect for agent-written command text: full, brief, posix,
+        /// windows. Passed to a freshly spawned server (default full, or
+        /// config/preferences.toml). Ignored when joining a live session.
+        #[arg(long)]
+        dialect: Option<String>,
     },
     /// Check the environment and (with --llm) the model backend.
     Doctor {
@@ -88,6 +95,7 @@ async fn async_main(cli: Cli) -> Result<()> {
             turn_cap,
             message,
             cwd,
+            dialect,
         } => {
             run_session(RunOpts {
                 session_id,
@@ -101,6 +109,7 @@ async fn async_main(cli: Cli) -> Result<()> {
                 turn_cap,
                 message,
                 cwd,
+                dialect,
             })
             .await
         }
@@ -124,6 +133,7 @@ struct RunOpts {
     turn_cap: usize,
     message: Option<String>,
     cwd: Option<PathBuf>,
+    dialect: Option<String>,
 }
 
 fn default_state_dir() -> PathBuf {
@@ -161,6 +171,12 @@ async fn run_session(opts: RunOpts) -> Result<()> {
     // Spawn the server if nobody is listening.
     let mut server_child = None;
     if !endpoint::listening(&endpoint).await {
+        // Fail fast on a bad --dialect rather than after spawning.
+        if let Some(d) = &opts.dialect {
+            d.parse::<fa_core::dialect::ScriptDialect>().with_context(|| {
+                format!("invalid --dialect {d:?}; expected one of: full, brief, posix, windows")
+            })?;
+        }
         let factoragent = find_factoragent().context(
             "no session socket and no `factoragent` binary next to fa32 (nor --session-id of a live session)",
         )?;
@@ -191,6 +207,9 @@ async fn run_session(opts: RunOpts) -> Result<()> {
         if opts.auto_approve {
             cmd.arg("--auto-approve");
         }
+        if let Some(d) = &opts.dialect {
+            cmd.arg("--dialect").arg(d);
+        }
         if let Some(cwd) = &opts.cwd {
             cmd.arg("--cwd").arg(cwd);
         }
@@ -201,6 +220,10 @@ async fn run_session(opts: RunOpts) -> Result<()> {
         let child = cmd.spawn().context("spawn factoragent serve")?;
         server_child = Some(child);
         wait_for_endpoint(&endpoint, Duration::from_secs(60)).await?;
+    } else if opts.dialect.is_some() {
+        // The dialect is baked into the session's prompt at spawn; joining a
+        // live session can't change it.
+        eprintln!("note: --dialect is ignored when joining a live session");
     }
 
     let handler = ClientHandler;

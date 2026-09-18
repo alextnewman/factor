@@ -380,8 +380,8 @@ skeleton when the verb implies mutation — the format is produced, not memorize
 - Layout under `%LOCALAPPDATA%\WinAgent32\`:
   - `config/providers/<name>.toml` — one TOML file per LLM provider.
   - `config/preferences.toml` — scalar user preferences: default provider, error
-    mode, approval policy, sandbox backend (§4.6). One small flat file is honest;
-    a giant mixed blob is not.
+    mode, approval policy, sandbox backend (§4.6), script dialect (§4.15).
+    One small flat file is honest; a giant mixed blob is not.
   - `sessions/<id>.db`, `tools/`, caches — agent-controlled or user-data, not config.
 - **Default backend: local-first.** `llama.cpp` at `http://127.0.0.1:8080` —
   zero-config, no key, private. Hosted providers (Meta Model API, …) are one
@@ -589,6 +589,58 @@ same invocation; neither is a paraphrase of the other.
 - Examples: `Read-FAFile` → `Read {Path}` · `Write-FAFile` → `Write {Path}`
   · `Invoke-FACommand` → `Run {Command}` · `Find-FAFile` →
   `Find {Pattern} in {Path}` · `New-FATerminal` → `Open terminal {Name}`.
+
+### 4.15 Script dialects — [DECIDED] (2026-09-18)
+
+A true PowerShell dialect, not a rendering trick. The operator selects a
+vernacular; it becomes part of the system prompt (Block B, §8.3); the agent
+writes real scripts in it. The bytes the agent writes are the bytes the
+operator vets at the approval gate and the bytes the host executes — one
+representation, end to end. Contrast §4.14: print forms deliberately render
+an action view distinct from the incantation (two audiences, two
+renderings); a dialect has no translation layer anywhere, so the veto is
+always WYSIWYG.
+
+Four dialects:
+
+| Dialect | Register | Example |
+|---|---|---|
+| `full` (default) | PowerShell, full cmdlet names | `Get-ChildItem` |
+| `brief` | PowerShell short aliases | `gci` |
+| `posix` | posix-style aliases, still PowerShell | `ls` |
+| `windows` | cmd-style aliases, still PowerShell | `dir` |
+
+Rules, enforced by the prompt section's closed alias table (the model never
+invents aliases; unknown aliases fail loudly at the host and the model
+self-corrects):
+
+- **Tools are never aliased.** The dialect governs freeform script text only
+  (`Invoke-FACommand -Command`, terminal input). `call Read-FAFile {...}`
+  in every dialect; the tool vocabulary stays canonical.
+- **Aliases rename cmdlets, never parameters.** `ls -Recurse` is right;
+  `ls -la` is WRONG — posix flags do not exist in PowerShell, and the
+  prompt section names this footgun explicitly.
+- **Ephemeral vs. durable.** The dialect is for commands that *run*, not
+  files that *persist*. `Write-FAFile` content keeps full cmdlet names:
+  saved scripts must not depend on aliases (PSScriptAnalyzer flags them
+  for the same reason).
+- **Default `full`.** Full-fat is clearest for the model, and our validity
+  data (M4: 100% first-try for the 4B class) is all full-fat. Dialects are
+  opt-in until measured. Token savings are real but secondary — scripts are
+  a thin slice of context; the prize is the operator vetting commands in
+  the dialect they already think in.
+
+- Alias tables are authoritative for the **Windows host** (the product
+  platform). PowerShell on Unix strips the aliases that collide with native
+  commands (`ls`, `cat`, `rm`, … resolve to the native binaries there), so
+  the posix table only fully holds where the agent host is Windows.
+- Selection: `--dialect` flag (`factoragent serve`, passed through by
+  `fa32 run`) > `dialect` key in `config/preferences.toml` (§4.10) >
+  `full`. A bad flag value fails fast; a bad file value warns and falls
+  back — a cosmetic preference never bricks session start. Writes to
+  `preferences.toml` are hand-edit (or wizard-owned, §4.10) for now.
+- The dialect is baked into the session's Block B at spawn; joining a live
+  session with `--dialect` warns and is ignored.
 
 ## 5. Wire protocol: ACP everywhere — [DECIDED]
 
