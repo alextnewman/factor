@@ -764,6 +764,44 @@ the operator doesn't already have) nor expansive (no cumulative object
 dumps). Each camera shows what its medium can carry; neither is the
 territory.
 
+### 6.2 The Textual Realist camera — [LOCKED] (2026-09-18)
+
+fa32 is the textual camera: a rich line-oriented renderer over the event
+stream, written in Rust. The engine stays presentation-free. Realized first
+as `tui-flair/textual-realist.html` (web-first proof); the fa32 renderer
+follows it.
+
+- **Chronicle scroll.** Every tool call/result renders as its print form
+  (§4.14): `⚙ Tree crates`, `✓ Tree crates (215ms)`. Token metadata whispers
+  underneath in dim.
+- **Detail rule.** Below the print form, a detail line carries the
+  verifiable remainder — exact tool name, full canonical paths, execution
+  context (`Write-FAFile · 252 bytes → V:\Sources\factor\list-by-size.ps1`).
+  It must add information, never pure-restate. For `Run {Command}` the
+  print form already embeds the command, so the detail carries context
+  (`terminal 'default'`) and the gate's raw line carries the verbatim bytes.
+  This is the WYSIWYG veto: the operator always sees exactly what executes.
+- **The gate is the one box that earns its border.** The approval
+  interruption renders as a box-drawn frame with the title on the border —
+  the frame marks the veto boundary, which is its meaning. Action prominent;
+  raw incantation as verifiable detail. Box-drawing appears nowhere else
+  decoratively.
+- **No branding in the real TUI.** Sections are structured by print forms,
+  not labels. (Runic kickers were tried in the prototype and cut for
+  clarity.)
+- **Color schemes, true-color.** ember (default), frost, parchment, ghost.
+  fa32 emits 24-bit ANSI (`38;2;r;g;b`); Windows Terminal and Ghostty carry
+  it 1:1. ghost paints no background — translucent panels float on the
+  operator's own terminal theme (keeps acrylic). Honest degradation:
+  `NO_COLOR`, non-TTY (plain greppable lines), reduced-motion (static final
+  frames, no in-place animation).
+- **The trail, live.** The collapsed trail line with the traveling mark
+  (`● winagent32 › crates › factoragent › tests`) renders from generic
+  traversal-progress events — not per-tool renderer lore. In-place mark
+  movement when interactive; one settled line when piped. Progress-event
+  design is the remaining engine slice; the renderer contract is: a moving
+  mark over stable room identity, no visited-object dumps.
+
 ## 7. Security model
 
 ### 7.1 MXC sandboxing — [DECIDED]
