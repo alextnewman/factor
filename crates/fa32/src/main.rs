@@ -6,7 +6,9 @@
 
 use std::future::Future;
 use std::io::{self, Write};
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 use std::pin::Pin;
 use std::time::Duration;
 

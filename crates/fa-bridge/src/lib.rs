@@ -80,7 +80,8 @@ impl HostBridge {
         }
         #[cfg(windows)]
         {
-            use std::os::windows::process::CommandExt;
+            // NOTE: no `CommandExt` import — tokio's Command has an inherent
+            // `creation_flags`, so the std trait would be an unused import.
             const CREATE_NEW_PROCESS_GROUP: u32 = 0x00000200;
             cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
         }
