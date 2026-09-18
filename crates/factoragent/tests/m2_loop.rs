@@ -14,7 +14,8 @@ use fa_core::backend::MockBackend;
 use fa_core::dialect::ScriptDialect;
 use fa_core::executor::{ErrorMode, Executor};
 use fa_core::manifest::load_manifest;
-use fa_core::prompt::{build_block_a, SessionFacts};use fa_core::session::SessionDb;
+use fa_core::prompt::{build_block_a, SessionFacts};
+use fa_core::session::SessionDb;
 use serde_json::{json, Map, Value};
 
 fn pwsh_present() -> bool {
@@ -38,6 +39,10 @@ struct Harness {
 
 impl Harness {
     async fn new(tag: &str) -> Option<(Self, HostBridge)> {
+        Self::new_with_dialect(tag, ScriptDialect::Full).await
+    }
+
+    async fn new_with_dialect(tag: &str, dialect: ScriptDialect) -> Option<(Self, HostBridge)> {
         if !pwsh_present() {
             eprintln!("SKIP m2 ({tag}): pwsh not on PATH");
             return None;
@@ -80,7 +85,7 @@ impl Harness {
             .unwrap();
         let schemas = load_manifest(m.as_str().unwrap()).unwrap();
         assert_eq!(schemas.len(), 11);
-        let block_a = build_block_a(&schemas);
+        let block_a = build_block_a(&schemas, dialect);
         let h = Self {
             work,
             session_id,
@@ -99,7 +104,6 @@ impl Harness {
             manifest_version: "0.1.0".into(),
             scope_notes: vec![],
             terminals: vec![],
-            dialect: ScriptDialect::Full,
         }
     }
 
@@ -480,19 +484,17 @@ async fn m2_edit_on_multicall_chain_fails_closed() {
 
 #[tokio::test]
 async fn m2_dialect_section_reaches_model() {
-    let Some((h, bridge)) = Harness::new("dialect").await else {
+    let Some((h, bridge)) = Harness::new_with_dialect("dialect", ScriptDialect::Posix).await else {
         return;
     };
     let backend = Arc::new(MockBackend::new(vec!["Done.".to_string()]));
-    let mut facts = h.facts();
-    facts.dialect = ScriptDialect::Posix;
     let mut agent = h.agent_with(
         backend.clone(),
         bridge,
         Arc::new(AutoApprover),
         true,
         ErrorMode::StopAndReport,
-        facts,
+        h.facts(),
     );
     agent
         .run_prompt("hello", &silent)

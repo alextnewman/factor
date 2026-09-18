@@ -593,8 +593,10 @@ same invocation; neither is a paraphrase of the other.
 ### 4.15 Script dialects — [DECIDED] (2026-09-18)
 
 A true PowerShell dialect, not a rendering trick. The operator selects a
-vernacular; it becomes part of the system prompt (Block B, §8.3); the agent
-writes real scripts in it. The bytes the agent writes are the bytes the
+vernacular; it becomes a prompt section at the top of Block A — immediately
+after the tool protocol, before the manifest — so it frames how the model
+reads the manifest's full-fat examples rather than whispering after them
+(§8.3). The agent writes real scripts in the dialect. The bytes the agent writes are the bytes the
 operator vets at the approval gate and the bytes the host executes — one
 representation, end to end. Contrast §4.14: print forms deliberately render
 an action view distinct from the incantation (two audiences, two
@@ -866,7 +868,11 @@ territory.
 
 - **Static-first, append-only.** Order blocks by stability; a change at position N
   only reprocesses from N onward under prefix caching:
-  1. Block A — system prompt + tool manifest. Byte-identical per session. Frozen.
+  1. Block A — system prompt + script dialect (§4.15) + tool manifest.
+     Byte-identical per session. Frozen. The dialect section sits between the
+     tool protocol and the manifest: the model imitates what it sees most, so
+     the dialect must speak first — a rule at the end of Block B loses to four
+     thousand tokens of full-fat manifest examples.
   2. Block B — session facts (cwd, mode) **plus harness-composed scope state**
      (user/project/session, §4.13). Rarely changes; a scope change is an explicit
      Block B reprocessing event.

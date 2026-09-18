@@ -196,7 +196,7 @@ async fn async_main(cli: Cli) -> Result<()> {
     };
     let schemas = load_manifest(&manifest_str)?;
     tracing::info!("manifest: {} tools", schemas.len());
-    let block_a = build_block_a(&schemas);
+    let block_a = build_block_a(&schemas, dialect);
     // Print forms: tool name -> human action template. The engine expands
     // them into events so every client renders the same action view; the
     // wire carries both the incantation (name+args) and the action (print).
@@ -234,7 +234,6 @@ async fn async_main(cli: Cli) -> Result<()> {
         manifest_version: "0.1.0".into(),
         scope_notes: db.scope_all(&session_id)?,
         terminals: vec![],
-        dialect,
     };
     let mut agent_loop = AgentLoop::new(
         backend,

@@ -2,10 +2,15 @@
 //!
 //! Order blocks by stability so prefix caching reprocesses as little as
 //! possible:
-//!   Block A — system prompt + tool manifest. Byte-identical per session.
+//!   Block A — system prompt + script dialect + tool manifest.
+//!     Byte-identical per session.
 //!   Block B — session facts + scope state. Rarely changes.
 //!   Block C — conversation. Strictly append-only.
 //!   Suffix  — ephemeral nudges at the END. Never prepend.
+//!
+//! The dialect section sits at the top of Block A, immediately after the
+//! tool protocol and before the manifest: it must frame how the model reads
+//! the manifest's full-fat examples, not whisper after them.
 
 use crate::dialect::ScriptDialect;
 use crate::manifest::{render_tools, ToolSchema};
@@ -70,14 +75,16 @@ pub struct SessionFacts {
     pub manifest_version: String,
     pub scope_notes: Vec<(String, String)>,
     pub terminals: Vec<String>,
-    /// The vernacular the agent writes command text in (§4.15).
-    /// Stable per session, so Block B stays cache-friendly.
-    pub dialect: ScriptDialect,
 }
 
-/// Block A: system prompt + full tool manifest. Frozen per session.
-pub fn build_block_a(schemas: &[ToolSchema]) -> String {
-    format!("{SYSTEM_PREAMBLE}\n{}", render_tools(schemas))
+/// Block A: system prompt + script dialect + full tool manifest.
+/// Frozen per session.
+pub fn build_block_a(schemas: &[ToolSchema], dialect: ScriptDialect) -> String {
+    format!(
+        "{SYSTEM_PREAMBLE}\n{}\n{}",
+        dialect.prompt_section(),
+        render_tools(schemas)
+    )
 }
 
 /// Block B: session facts + harness-composed scope state.
@@ -102,8 +109,6 @@ pub fn build_block_b(facts: &SessionFacts) -> String {
             out.push_str(&format!("  - {k}: {v}\n"));
         }
     }
-    out.push('\n');
-    out.push_str(&facts.dialect.prompt_section());
     out
 }
 
@@ -154,7 +159,7 @@ pub fn render_tool_result(
 mod tests {
     use super::*;
 
-    fn test_facts(dialect: ScriptDialect) -> SessionFacts {
+    fn test_facts() -> SessionFacts {
         SessionFacts {
             session_id: "s1".into(),
             cwd: "/work".into(),
@@ -163,18 +168,29 @@ mod tests {
             manifest_version: "0.1.0".into(),
             scope_notes: vec![],
             terminals: vec![],
-            dialect,
         }
     }
 
     #[test]
-    fn block_b_carries_dialect_section() {
-        let b = build_block_b(&test_facts(ScriptDialect::Posix));
-        assert!(b.contains("## Script dialect: posix"));
-        assert!(b.contains("ls -> Get-ChildItem"));
-        let b = build_block_b(&test_facts(ScriptDialect::Full));
-        assert!(b.contains("## Script dialect: full"));
-        assert!(!b.contains("ls -> Get-ChildItem"));
+    fn block_a_carries_dialect_section_first() {
+        // The dialect section must precede the manifest: it frames how the
+        // model reads the manifest's full-fat examples.
+        let a = build_block_a(&[], ScriptDialect::Posix);
+        let dpos = a.find("## Script dialect: posix").expect("dialect section");
+        assert!(a[dpos..].contains("ls -> Get-ChildItem"));
+        assert!(a[dpos..].contains("You write:"));
+        assert!(a[dpos..].contains("`ls -la` is WRONG"));
+        let a = build_block_a(&[], ScriptDialect::Full);
+        assert!(a.contains("## Script dialect: full"));
+        assert!(!a.contains("ls -> Get-ChildItem"));
+        // Preamble still leads; the dialect speaks before any tool reference.
+        assert!(a.find("You are FactorAgent").unwrap() < a.find("## Script dialect:").unwrap());
+    }
+
+    #[test]
+    fn block_b_has_no_dialect() {
+        let b = build_block_b(&test_facts());
+        assert!(!b.contains("Script dialect:"));
     }
 
     #[test]

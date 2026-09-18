@@ -109,30 +109,44 @@ impl ScriptDialect {
 
     /// The Block B prompt section for this dialect: the closed table plus
     /// the rules that keep the dialect honest.
+    ///
+    /// This section is placed at the TOP of Block A — immediately after the
+    /// tool protocol, before the manifest — so it frames how the model reads
+    /// everything after it. A rule at the end of Block B loses to four
+    /// thousand tokens of full-fat manifest examples; the model imitates
+    /// what it sees most, so the dialect must speak first and show its
+    /// shape, not just state its rules.
     pub fn prompt_section(&self) -> String {
-        const RULES: &str = "\
-- Only the aliases listed above. Anything not listed keeps its full cmdlet name; never invent aliases.
-- Tool calls are never aliased: `call Read-FAFile {...}`, always.
-- Files written with Write-FAFile keep full cmdlet names: saved scripts must not depend on aliases.";
-
         let mut out = format!("## Script dialect: {}\n\n", self.label());
         match self {
             Self::Full => {
                 out.push_str(
-                    "Write command text with full cmdlet names: `Get-ChildItem`, not `gci` or `ls`.\n",
+                    "You write ALL PowerShell command text with full cmdlet names: \
+                     `Get-ChildItem`, not `gci` or `ls`. Parameters stay spelled out.\n",
                 );
             }
             _ => {
+                // The table's first alias drives the few-shot example, so the
+                // example always shows this dialect's own vernacular.
+                let (eg_alias, _) = self.aliases()[0];
                 out.push_str(
-                    "Write PowerShell command text (the `-Command` of Invoke-FACommand, terminal input) \
-                     with these aliases:\n",
+                    "You write ALL PowerShell command text (the `-Command` of Invoke-FACommand, \
+                     terminal input) in this dialect. The tool reference below uses full cmdlet \
+                     names — that is the reference register, not your writing register.\n\
+                     \nAliases:\n",
                 );
                 for chunk in self.aliases().chunks(3) {
                     let row: Vec<String> =
                         chunk.iter().map(|(a, c)| format!("{a} -> {c}")).collect();
                     out.push_str(&format!("- {}\n", row.join("; ")));
                 }
-                out.push('\n');
+                out.push_str(&format!(
+                    "\nYou write:\n\
+                     call Invoke-FACommand {{\"Command\": \"{eg_alias} -File | Sort-Object Length -Descending\"}}\n\
+                     Never:\n\
+                     call Invoke-FACommand {{\"Command\": \"Get-ChildItem -File | Sort-Object -Property Length -Descending\"}}\n\
+                     \nRules:\n"
+                ));
                 match self {
                     Self::Brief => out.push_str(
                         "- Aliases rename cmdlets only. Parameters stay spelled out: `gci -Recurse` \
@@ -149,8 +163,14 @@ impl ScriptDialect {
                     ),
                     Self::Full => unreachable!(),
                 }
-                out.push_str(RULES);
-                out.push('\n');
+                out.push_str(
+                    "- Only the aliases listed above. Anything not listed keeps its full cmdlet \
+                     name; never invent aliases. (Note `Sort-Object` in the example: not in the \
+                     table, so it stays full — aliases and full names compose freely.)\n\
+                     - Tool calls are never aliased: `call Read-FAFile {...}`, always.\n\
+                     - Files written with Write-FAFile keep full cmdlet names: saved scripts must \
+                     not depend on aliases.\n",
+                );
             }
         }
         out
@@ -282,13 +302,19 @@ mod tests {
         assert!(posix.contains("`ls -la` is WRONG"));
         assert!(posix.contains("never aliased"));
         assert!(posix.contains("Write-FAFile keep full cmdlet names"));
+        // Few-shot: the example shows this dialect's own vernacular, and the
+        // reference register is explicitly not the writing register.
+        assert!(posix.contains("\"ls -File | Sort-Object Length -Descending\""));
+        assert!(posix.contains("reference register, not your writing register"));
 
         let brief = ScriptDialect::Brief.prompt_section();
         assert!(brief.contains("gci -> Get-ChildItem"));
         assert!(brief.contains("`gci -r` is WRONG"));
+        assert!(brief.contains("\"gci -File | Sort-Object Length -Descending\""));
 
         let win = ScriptDialect::Windows.prompt_section();
         assert!(win.contains("dir -> Get-ChildItem"));
+        assert!(win.contains("\"dir -File | Sort-Object Length -Descending\""));
 
         let full = ScriptDialect::Full.prompt_section();
         assert!(full.contains("## Script dialect: full"));
