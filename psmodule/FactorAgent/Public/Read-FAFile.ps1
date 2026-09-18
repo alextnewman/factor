@@ -30,6 +30,7 @@ function Read-FAFile {
     .OUTPUTS
         String[]. Each element is "<line-number>: <content>".
     #>
+    # .PRINTFORM: Read {Path}
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Path,

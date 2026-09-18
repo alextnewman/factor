@@ -6,6 +6,7 @@ function Get-FAToolManifest {
         Reflects every *-FA* function in the FactorAgent module (except
         itself) into a JSON array: name, synopsis, description, parameters
         (name, JSON type, required, enum, description), examples, outputs,
+        printForm (the .PRINTFORM human action template, null when absent),
         source tag. The Rust harness calls this once per session to build
         Block A. Single source of truth: the manifest IS the module.
     .EXAMPLE
@@ -57,6 +58,20 @@ function Get-FAToolManifest {
         }
         $examples = @($help.examples.example | ForEach-Object {
             (($_.code) -join "`n").Trim() } | Where-Object { $_ })
+        # .PRINTFORM lives in a plain `# .PRINTFORM:` comment line (not a
+        # comment-based help keyword — Get-Help rejects help blocks that
+        # contain unknown keywords). Missing form is $null: the client
+        # falls back to the raw invocation.
+        $printForm = $null
+        $scriptFile = $cmd.ScriptBlock.File
+        if ($scriptFile -and (Test-Path -LiteralPath $scriptFile)) {
+            foreach ($line in [System.IO.File]::ReadAllLines($scriptFile)) {
+                if ($line -match '^\s*#\s*\.PRINTFORM\s*:\s*(.+?)\s*$') {
+                    $printForm = $Matches[1].Trim()
+                    break
+                }
+            }
+        }
         [PSCustomObject]@{
             name        = $cmd.Name
             synopsis    = $help.Synopsis.Trim()
@@ -64,6 +79,7 @@ function Get-FAToolManifest {
             parameters  = @($params)
             examples    = $examples
             outputs     = ($help.returnValues.returnValue.type.name | Select-Object -First 1)
+            printForm   = $printForm
             source      = 'builtin'
         }
     }

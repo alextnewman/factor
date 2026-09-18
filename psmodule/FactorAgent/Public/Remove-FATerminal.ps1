@@ -16,6 +16,7 @@ function Remove-FATerminal {
     .OUTPUTS
         PSCustomObject with Name, Removed, Preview.
     #>
+    # .PRINTFORM: Close terminal {Name}
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Name

@@ -38,6 +38,7 @@ function Get-FATree {
         String[]. Indented tree lines; directories carry recursive file
         counts, folded subtrees and caps are reported in trailing notes.
     #>
+    # .PRINTFORM: Tree {Path}
     [CmdletBinding()]
     param(
         [string]$Path = (Get-Location).Path,

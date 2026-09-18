@@ -346,21 +346,31 @@ impl RpcHandler for ClientHandler {
                 "event.tool_call" => {
                     if let Some(calls) = params.get("calls").and_then(|v| v.as_array()) {
                         for c in calls {
-                            let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                            let args =
-                                serde_json::to_string(&c.get("args").unwrap_or(&Value::Null))
-                                    .unwrap_or_default();
-                            println!("  ⚙ {name} {args}");
+                            // The human view: the engine-expanded print form.
+                            // Falls back to the raw invocation for servers
+                            // that predate print forms.
+                            println!("  ⚙ {}", call_print(c));
                         }
                     }
                 }
                 "event.tool_result" => {
-                    let name = params.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                    let ok = params.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                     let ms = params
                         .get("duration_ms")
                         .and_then(|v| v.as_u64())
                         .unwrap_or(0);
+                    // The human view: the same print form as the call line.
+                    let name = params
+                        .get("print")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| {
+                            params
+                                .get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("?")
+                                .to_string()
+                        });
+                    let ok = params.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
                     if ok {
                         println!("  ✓ {name} ({ms}ms)");
                     } else {
@@ -417,7 +427,7 @@ impl RpcHandler for ClientHandler {
                         .and_then(|v| v.as_array())
                         .cloned()
                         .unwrap_or_default();
-                    let decision = ask_approval(&previews, chain.len());
+                    let decision = ask_approval(&previews, &chain);
                     let mut resp = json!({"approvalId": approval_id, "decision": decision.0});
                     if let Some(args) = decision.1 {
                         resp["args"] = args;
@@ -430,16 +440,36 @@ impl RpcHandler for ClientHandler {
     }
 }
 
-/// Interactive approval UX: WhatIf expansion, then approve/deny/edit.
-fn ask_approval(previews: &[Value], chain_len: usize) -> (&'static str, Option<Value>) {
-    println!("\n── approval requested ──────────────────────");
-    for p in previews {
-        println!("  • {}", p.as_str().unwrap_or("?"));
+/// One tool call's human-readable form: the engine-expanded print form
+/// (`print`), or the raw `name + args` for servers that predate print forms.
+fn call_print(c: &Value) -> String {
+    if let Some(p) = c.get("print").and_then(|v| v.as_str()) {
+        return p.to_string();
     }
-    if previews.is_empty() {
-        println!("  • ({chain_len} mutating call(s), no previews)");
+    let name = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
+    let args =
+        serde_json::to_string(c.get("args").unwrap_or(&Value::Null)).unwrap_or_default();
+    format!("{name} {args}")
+}
+
+/// Interactive approval UX: the chain as print forms (the action the veto
+/// judges), WhatIf previews as verifiable detail, then approve/deny/edit.
+fn ask_approval(previews: &[Value], chain: &[Value]) -> (&'static str, Option<Value>) {
+    println!("\n── approval requested ──────────────────────");
+    for c in chain {
+        println!("  • {}", call_print(c));
+    }
+    if !previews.is_empty() {
+        println!("  ── detail ──");
+        for p in previews {
+            println!("  • {}", p.as_str().unwrap_or("?"));
+        }
+    }
+    if chain.is_empty() && previews.is_empty() {
+        println!("  • (nothing to show)");
     }
     println!("────────────────────────────────────────────");
+    let chain_len = chain.len();
     loop {
         print!("[a]pprove / [d]eny");
         if chain_len == 1 {

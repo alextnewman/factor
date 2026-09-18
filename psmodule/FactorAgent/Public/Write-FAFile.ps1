@@ -26,6 +26,7 @@ function Write-FAFile {
     .OUTPUTS
         PSCustomObject with Path, BytesWritten, Created, Preview.
     #>
+    # .PRINTFORM: Write {Path}
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Path,

@@ -81,4 +81,25 @@ Describe 'Module lint — built-ins dogfood §4.9.3' {
             $bad.Count | Should -Be 0 -Because "$($f.Name) must not use Invoke-Expression/Add-Type"
         }
     }
+
+    It 'every agent tool has .PRINTFORM (builtins: required; user tools: warn at load)' {
+        $harnessOnly = @('Get-FAToolManifest')
+        foreach ($f in $script:Files) {
+            $name = $f.BaseName
+            if ($name -in $harnessOnly) { continue }
+            $lines = [System.IO.File]::ReadAllLines($f.FullName)
+            $templates = foreach ($l in $lines) {
+                if ($l -match '^\s*#\s*\.PRINTFORM\s*:\s*(.+?)\s*$') { $Matches[1].Trim() }
+            }
+            @($templates).Count | Should -Be 1 -Because "$name needs one # .PRINTFORM: line"
+            $template = @($templates)[0]
+            $template | Should -Not -BeNullOrEmpty -Because "$name .PRINTFORM needs a template"
+            # Every {Param} in the template must be a real parameter.
+            $cmd = Get-Command $name
+            foreach ($m in [regex]::Matches($template, '\{([A-Za-z][A-Za-z0-9]*)\}')) {
+                $cmd.Parameters.Keys | Should -Contain $m.Groups[1].Value `
+                    -Because "$name .PRINTFORM references unknown parameter $($m.Groups[1].Value)"
+            }
+        }
+    }
 }

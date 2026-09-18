@@ -190,6 +190,14 @@ async fn async_main(cli: Cli) -> Result<()> {
     let schemas = load_manifest(&manifest_str)?;
     tracing::info!("manifest: {} tools", schemas.len());
     let block_a = build_block_a(&schemas);
+    // Print forms: tool name -> human action template. The engine expands
+    // them into events so every client renders the same action view; the
+    // wire carries both the incantation (name+args) and the action (print).
+    let print_forms: HashMap<String, String> = schemas
+        .iter()
+        .filter_map(|s| s.print_form.clone().map(|t| (s.name.clone(), t)))
+        .collect();
+    tracing::info!("print forms: {} tools", print_forms.len());
 
     let backend: Arc<dyn LlmBackend> = match backend {
         BackendKind::Mock => Arc::new(MockBackend::new(vec![])),
@@ -197,7 +205,7 @@ async fn async_main(cli: Cli) -> Result<()> {
     };
 
     // Approval path: auto-approve flag, or ask the connected frontend.
-    let socket_approver = Arc::new(SocketApprover::new());
+    let socket_approver = Arc::new(SocketApprover::new(print_forms.clone()));
     let approver: ApproverRef = if auto_approve {
         Arc::new(AutoApprover)
     } else {
@@ -239,6 +247,7 @@ async fn async_main(cli: Cli) -> Result<()> {
         db,
         session_id: session_id.clone(),
         stopping: stopping.clone(),
+        print_forms,
     };
     #[cfg(unix)]
     let server = RpcServer::bind(&sock_path, handler).await?;
@@ -259,6 +268,7 @@ async fn async_main(cli: Cli) -> Result<()> {
 /// Bound to one connection for the duration of a prompt.
 struct SocketApprover {
     binding: Mutex<Option<ApproverBinding>>,
+    print_forms: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -268,9 +278,10 @@ struct ApproverBinding {
 }
 
 impl SocketApprover {
-    fn new() -> Self {
+    fn new(print_forms: HashMap<String, String>) -> Self {
         Self {
             binding: Mutex::new(None),
+            print_forms,
         }
     }
 
@@ -311,7 +322,13 @@ impl Approver for SocketApprover {
             let chain: Vec<Value> = req
                 .chain
                 .iter()
-                .map(|c| json!({"name": c.name, "args": c.args}))
+                .map(|c| {
+                    json!({
+                        "name": c.name,
+                        "args": c.args,
+                        "print": print_text(&c.name, &c.args, &self.print_forms),
+                    })
+                })
                 .collect();
             binding
                 .peer
@@ -337,6 +354,7 @@ struct SessionHandler {
     db: Arc<SessionDb>,
     session_id: String,
     stopping: Arc<AtomicBool>,
+    print_forms: HashMap<String, String>,
 }
 
 impl RpcHandler for SessionHandler {
@@ -353,6 +371,7 @@ impl RpcHandler for SessionHandler {
         let stopping = self.stopping.clone();
         let db = self.db.clone();
         let session_id = self.session_id.clone();
+        let print_forms = self.print_forms.clone();
         Box::pin(async move {
             match method.as_str() {
                 "session.prompt" => {
@@ -371,7 +390,7 @@ impl RpcHandler for SessionHandler {
                     let outcome = {
                         let mut agent = agent.lock().await;
                         let r = agent
-                            .run_prompt(&text, &|ev| emit_to_peer(&peer, ev))
+                            .run_prompt(&text, &|ev| emit_to_peer(&peer, &print_forms, ev))
                             .await
                             .map_err(|e| e.to_string());
                         socket_approver.unbind();
@@ -430,17 +449,28 @@ impl RpcHandler for SessionHandler {
 /// Serialize loop events onto the wire in order. This is awaited (not
 /// spawned) so notifications always land before the session.prompt
 /// response that follows them on the same stream.
-async fn emit_to_peer(peer: &RpcPeer, ev: LoopEvent) {
+async fn emit_to_peer(peer: &RpcPeer, print_forms: &HashMap<String, String>, ev: LoopEvent) {
     let peer = peer.clone();
     let (method, params) = match ev {
         LoopEvent::AgentText(t) => ("event.agent_text", json!({"text": t})),
         LoopEvent::ToolCalls(calls) => (
             "event.tool_call",
-            json!({"calls": calls.iter().map(|c| json!({"name": c.name, "args": c.args})).collect::<Vec<_>>()}),
+            json!({"calls": calls.iter().map(|c| json!({
+                "name": c.name,
+                "args": c.args,
+                "print": print_text(&c.name, &c.args, print_forms),
+            })).collect::<Vec<_>>()}),
         ),
         LoopEvent::ToolResult(r) => (
             "event.tool_result",
-            json!({"name": r.call.name, "ok": r.ok, "error": r.error, "duration_ms": r.duration_ms}),
+            json!({
+                "name": r.call.name,
+                "args": r.call.args,
+                "print": print_text(&r.call.name, &r.call.args, print_forms),
+                "ok": r.ok,
+                "error": r.error,
+                "duration_ms": r.duration_ms,
+            }),
         ),
         LoopEvent::Warning(w) => ("event.warning", json!({"text": w})),
         LoopEvent::ModelUsage {
@@ -457,4 +487,18 @@ async fn emit_to_peer(peer: &RpcPeer, ev: LoopEvent) {
         ),
     };
     let _ = peer.notify(method, params).await;
+}
+
+/// The human action view of one tool call: the tool's `.PRINTFORM` template
+/// expanded with the bound arguments. Tools without a print form fall back
+/// to the raw invocation, so the human view never goes blank.
+fn print_text(
+    name: &str,
+    args: &serde_json::Map<String, Value>,
+    print_forms: &HashMap<String, String>,
+) -> String {
+    match print_forms.get(name) {
+        Some(template) => fa_core::manifest::expand_print_form(template, args),
+        None => format!("{name} {}", Value::Object(args.clone())),
+    }
 }

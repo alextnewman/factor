@@ -23,6 +23,7 @@ function New-FATerminal {
         PSCustomObject with Name, State, WorkingDirectory, Toolchain, Backend,
         CreatedAt, Preview.
     #>
+    # .PRINTFORM: Open terminal {Name}
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Name,

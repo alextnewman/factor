@@ -15,6 +15,7 @@ function Get-FASession {
         PSCustomObject with Id, Mode, ErrorMode, Backend, ManifestVersion,
         WorkingDirectory.
     #>
+    # .PRINTFORM: Session status
     [CmdletBinding()]
     param()
     $s = $null

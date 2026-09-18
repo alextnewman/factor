@@ -15,6 +15,7 @@ function Get-FATerminal {
         PSCustomObject[] with Name, State, WorkingDirectory, Toolchain,
         Backend, CreatedAt.
     #>
+    # .PRINTFORM: List terminals
     [CmdletBinding()]
     param(
         [string]$Name = ''

@@ -26,6 +26,7 @@ function Invoke-FACommand {
         verbose build or test run can't flood the agent's context; the tail
         is kept because that's where errors and summaries land.
     #>
+    # .PRINTFORM: Run {Command}
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [string]$Terminal = 'default',

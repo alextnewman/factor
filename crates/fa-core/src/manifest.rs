@@ -34,6 +34,10 @@ pub struct ToolSchema {
     pub examples: Vec<String>,
     #[serde(default)]
     pub outputs: Option<String>,
+    /// The tool's `.PRINTFORM` human action template (`{Param}` substitution),
+    /// or None when the tool ships without one.
+    #[serde(default, rename = "printForm")]
+    pub print_form: Option<String>,
     #[serde(default = "builtin_source")]
     pub source: String,
 }
@@ -93,6 +97,46 @@ pub fn render_tools(schemas: &[ToolSchema]) -> String {
         }
         out.push('\n');
     }
+    out
+}
+
+/// Expand a print-form template: dumb `{Param}` substitution from the
+/// call's bound arguments. Strings render as-is; every other JSON value
+/// renders as compact JSON. A placeholder with no matching argument is
+/// left untouched — visible breakage beats silent wrongness. No escaping,
+/// no conditionals: deliberately dumb, per the print-form contract.
+pub fn expand_print_form(template: &str, args: &serde_json::Map<String, serde_json::Value>) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('}') {
+            Some(end) => {
+                let key = &after[..end];
+                match args.get(key) {
+                    Some(serde_json::Value::String(s)) => out.push_str(s),
+                    Some(other) => {
+                        out.push_str(&serde_json::to_string(other).unwrap_or_default())
+                    }
+                    None => {
+                        out.push('{');
+                        out.push_str(key);
+                        out.push('}');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                // No closing brace: the rest is literal. Consume it here
+                // so the trailing push below doesn't emit it twice.
+                out.push_str(&rest[start..]);
+                rest = "";
+                break;
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -157,5 +201,66 @@ mod tests {
         // Required-only: the optional Lines param must not appear in the
         // synthesized call line, so the model isn't tempted to fill it.
         assert!(rendered.contains(r#"Call as: call Read-FAFile {"Path": "..."}"#));
+    }
+
+    #[test]
+    fn print_form_parses_when_present() {
+        let schemas = load_manifest(
+            r#"[{"name": "Read-FAFile", "synopsis": "s", "printForm": "Read {Path}"}]"#,
+        )
+        .unwrap();
+        assert_eq!(schemas[0].print_form.as_deref(), Some("Read {Path}"));
+    }
+
+    #[test]
+    fn print_form_absent_is_none() {
+        let schemas = load_manifest(SAMPLE).unwrap();
+        assert_eq!(schemas[0].print_form, None);
+    }
+
+    #[test]
+    fn expand_substitutes_bound_params() {
+        let mut args = serde_json::Map::new();
+        args.insert("Path".into(), serde_json::json!("crates/factoragent/tests/m1_bridge.rs"));
+        assert_eq!(
+            expand_print_form("Read {Path}", &args),
+            "Read crates/factoragent/tests/m1_bridge.rs"
+        );
+    }
+
+    #[test]
+    fn expand_handles_multiple_placeholders() {
+        let mut args = serde_json::Map::new();
+        args.insert("Pattern".into(), serde_json::json!("*"));
+        args.insert("Path".into(), serde_json::json!("."));
+        assert_eq!(expand_print_form("Find {Pattern} in {Path}", &args), "Find * in .");
+    }
+
+    #[test]
+    fn expand_renders_non_strings_as_compact_json() {
+        let mut args = serde_json::Map::new();
+        args.insert("Lines".into(), serde_json::json!(40));
+        assert_eq!(
+            expand_print_form("Read {Path} ({Lines} lines)", &args),
+            "Read {Path} (40 lines)"
+        );
+    }
+
+    #[test]
+    fn expand_leaves_unknown_placeholders_visible() {
+        let args = serde_json::Map::new();
+        assert_eq!(expand_print_form("Run {Command}", &args), "Run {Command}");
+    }
+
+    #[test]
+    fn expand_leaves_unclosed_brace_alone() {
+        let args = serde_json::Map::new();
+        assert_eq!(expand_print_form("Read {Path", &args), "Read {Path");
+    }
+
+    #[test]
+    fn expand_template_without_placeholders_passes_through() {
+        let args = serde_json::Map::new();
+        assert_eq!(expand_print_form("List terminals", &args), "List terminals");
     }
 }

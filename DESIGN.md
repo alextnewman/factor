@@ -556,14 +556,20 @@ human gets a generic action view: `Read crates/factoragent/tests/m1_bridge.rs`.
 Both derive from the
 same invocation; neither is a paraphrase of the other.
 
-- The print form lives with the tool: a `.PRINTFORM` comment-based help
-  keyword in the tool's own `.ps1` — built-in and user tools alike —
-  extracted by the manifest generator like every other help field (§4.9.2).
-  One file, one function, one print form; the §4.9.1 format rule stands.
+- The print form lives with the tool: a `# .PRINTFORM:` comment line in the
+  tool's own `.ps1`, right after the comment-based help block — built-in and
+  user tools alike — extracted by the manifest generator like every other
+  help field (§4.9.2). (It can't be a help keyword inside the `<# #>` block:
+  `Get-Help` rejects blocks containing unknown keywords.) One file, one
+  function, one print form; the §4.9.1 format rule stands.
 - Template syntax is deliberately dumb: `{ParamName}` substitution from the
   bound parameters, nothing else. No conditionals, no expressions. (Client
   may truncate long substitutions; outcome glyphs ✓/✗ compose client-side.)
-- The client expands the template; the model never sees print forms.
+- The engine expands the template when emitting events: `event.tool_call`
+  items and approval chain items carry both the incantation (`name`+`args`)
+  and the action view (`print`). The model never sees print forms; clients
+  render `print`, falling back to the raw invocation for tools without one.
+  One expansion point means every client shows the same action view.
   Approval prompts, the Chronicle, and audit views render the print form;
   debug/diagnostic surfaces may show the raw invocation.
 - Missing `.PRINTFORM`: lint warns, not a load error; the client falls back

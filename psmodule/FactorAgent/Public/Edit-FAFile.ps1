@@ -21,6 +21,7 @@ function Edit-FAFile {
     .OUTPUTS
         PSCustomObject with Path, Replacements, Preview.
     #>
+    # .PRINTFORM: Edit {Path}
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$Path,
