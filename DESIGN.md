@@ -567,6 +567,18 @@ same invocation; neither is a paraphrase of the other.
   debug/diagnostic surfaces may show the raw invocation.
 - Missing `.PRINTFORM`: lint warns, not a load error; the client falls back
   to the raw command string. Honest degradation, never a blank.
+- **Terse, never chatty.** Print forms are not sentences — no "I will now…",
+  no plain-English filler. The human's attention is scarce the way the
+  model's tokens are scarce: dense, scannable, unambiguous. Same principle,
+  two encodings.
+- **Unambiguous.** Brevity comes from form, never from dropping identity.
+  `{Path}` renders the full repo-relative path as passed
+  (`crates/factoragent/tests/m1_bridge.rs`), never a bare basename that
+  could collide with another room's file.
+- **Width is the client's problem.** Terminals have character limits; the
+  client may left-truncate with `…` for display (`…/tests/m1_bridge.rs`),
+  but the full form is always one step away — and always complete in the
+  Judgment Gate, where the veto must be informed.
 - Examples: `Read-FAFile` → `Read {Path}` · `Write-FAFile` → `Write {Path}`
   · `Invoke-FACommand` → `Run {Command}` · `Find-FAFile` →
   `Find {Pattern} in {Path}` · `New-FATerminal` → `Open terminal {Name}`.
