@@ -547,6 +547,30 @@ decorators a home, so nothing is repeated memetically.
 - **Memory:** scopes are the filing system — user scope is durable memory, project
   scope is repo-convention memory, session scope is working memory.
 
+### 4.14 Print forms — [DECIDED] (2026-09-18)
+
+Two audiences, two renderings. The model gets the incantation: raw
+PowerShell (`Read-FAFile -Path crates/factoragent/tests/m1_bridge.rs`),
+precise and unambiguous — the golem reads exactly what is written. The
+human gets a generic action view: `Read m1_bridge.rs`. Both derive from the
+same invocation; neither is a paraphrase of the other.
+
+- The print form lives with the tool: a `.PRINTFORM` comment-based help
+  keyword in the tool's own `.ps1` — built-in and user tools alike —
+  extracted by the manifest generator like every other help field (§4.9.2).
+  One file, one function, one print form; the §4.9.1 format rule stands.
+- Template syntax is deliberately dumb: `{ParamName}` substitution from the
+  bound parameters, nothing else. No conditionals, no expressions. (Client
+  may truncate long substitutions; outcome glyphs ✓/✗ compose client-side.)
+- The client expands the template; the model never sees print forms.
+  Approval prompts, the Chronicle, and audit views render the print form;
+  debug/diagnostic surfaces may show the raw invocation.
+- Missing `.PRINTFORM`: lint warns, not a load error; the client falls back
+  to the raw command string. Honest degradation, never a blank.
+- Examples: `Read-FAFile` → `Read {Path}` · `Write-FAFile` → `Write {Path}`
+  · `Invoke-FACommand` → `Run {Command}` · `Find-FAFile` →
+  `Find {Pattern} in {Path}` · `New-FATerminal` → `Open terminal {Name}`.
+
 ## 5. Wire protocol: ACP everywhere — [DECIDED]
 
 - **ACP is the only wire protocol.** The TUI gets no private richer channel —
@@ -637,6 +661,12 @@ mode. So the harness is written for a literalist: protocols a golem can't
 misread, and the Judgment Gate set where the mage's veto belongs — before
 effects, not after. (In the old story the golem is animated by *emet*,
 truth, set upon its forehead. Ours too.)
+
+**Framing/code firewall.** The game/world/mage/golem/incantation vocabulary
+is a design model for the humans building this system. It does not enter
+code identifiers, cmdlet verbs/nouns, wire field names, event types, or
+shipped product text. The code stays boring; the myth stays in this
+section.
 
 **Context contract** — what "enough context" means, per event, so the deeper
 visualization stays possible without a wire change later:
