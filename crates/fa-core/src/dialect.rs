@@ -168,9 +168,8 @@ impl ScriptDialect {
                      name; never invent aliases. (Note `Sort-Object` in the example: not in the \
                      table, so it stays full — aliases and full names compose freely.)\n\
                      - Tool calls are never aliased: `call Read-FAFile {...}`, always.\n\
-                     - This dialect is your whole vernacular: it applies to files written with \
-                     Write-FAFile as well as commands you run. A script you save should read \
-                     like you wrote it.\n",
+                     - Files written with Write-FAFile keep full cmdlet names: saved scripts must \
+                     not depend on aliases.\n",
                 );
             }
         }
@@ -302,7 +301,7 @@ mod tests {
         assert!(posix.contains("ls -> Get-ChildItem"));
         assert!(posix.contains("`ls -la` is WRONG"));
         assert!(posix.contains("never aliased"));
-        assert!(posix.contains("whole vernacular"));
+        assert!(posix.contains("Write-FAFile keep full cmdlet names"));
         // Few-shot: the example shows this dialect's own vernacular, and the
         // reference register is explicitly not the writing register.
         assert!(posix.contains("\"ls -File | Sort-Object Length -Descending\""));
