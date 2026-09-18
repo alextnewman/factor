@@ -164,7 +164,7 @@ impl Approver for ScriptApprover {
     }
 }
 
-fn silent(_: LoopEvent) {}
+async fn silent(_: LoopEvent) {}
 
 #[tokio::test]
 async fn m2_mock_loop_happy_path() {

@@ -6,6 +6,7 @@
 //! Rust). Harness failures (closed pipe, protocol) abort; tool errors
 //! become results governed by the error mode.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -111,9 +112,10 @@ impl Executor {
 
     /// Run one chain (one model turn's tool calls). Returns per-call results.
     /// `Err(FaError::Denied)` when the operator denies the chain.
-    pub async fn run_chain<F>(&mut self, calls: &[ToolCall], emit: &F) -> Result<Vec<ToolResult>>
+    pub async fn run_chain<F, Fut>(&mut self, calls: &[ToolCall], emit: &F) -> Result<Vec<ToolResult>>
     where
-        F: Fn(ExecEvent) + Sync,
+        F: Fn(ExecEvent) -> Fut + Sync,
+        Fut: Future<Output = ()> + Send,
     {
         if calls.is_empty() {
             return Ok(Vec::new());
@@ -170,10 +172,10 @@ impl Executor {
 
         let mut results = Vec::with_capacity(calls.len());
         for call in &calls {
-            emit(ExecEvent::Started(call.clone()));
+            emit(ExecEvent::Started(call.clone())).await;
             let result = self.run_one(call).await?;
             let failed = !result.ok;
-            emit(ExecEvent::Finished(result.clone()));
+            emit(ExecEvent::Finished(result.clone())).await;
             results.push(result);
             if failed && self.error_mode == ErrorMode::StopAndReport {
                 break;

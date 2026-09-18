@@ -3,6 +3,7 @@
 //! Turn cap 25, full-history context, no compaction (prototype). The error
 //! mode dial decides what a tool failure means for the turn.
 
+use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::json;
@@ -88,9 +89,10 @@ impl AgentLoop {
     }
 
     /// Run one user prompt to completion (or the turn cap).
-    pub async fn run_prompt<F>(&mut self, user_text: &str, emit: &F) -> Result<LoopOutcome>
+    pub async fn run_prompt<F, Fut>(&mut self, user_text: &str, emit: &F) -> Result<LoopOutcome>
     where
-        F: Fn(LoopEvent) + Sync,
+        F: Fn(LoopEvent) -> Fut + Sync,
+        Fut: Future<Output = ()> + Send,
     {
         self.log("turn.started", &json!({"cap": self.turn_cap}))?;
         self.log("user.message", &json!({"text": user_text}))?;
@@ -108,9 +110,10 @@ impl AgentLoop {
         outcome
     }
 
-    async fn drive<F>(&mut self, emit: &F) -> Result<LoopOutcome>
+    async fn drive<F, Fut>(&mut self, emit: &F) -> Result<LoopOutcome>
     where
-        F: Fn(LoopEvent) + Sync,
+        F: Fn(LoopEvent) -> Fut + Sync,
+        Fut: Future<Output = ()> + Send,
     {
         for turn in 1..=self.turn_cap {
             let block_b = crate::prompt::build_block_b(&self.facts);
@@ -138,8 +141,9 @@ impl AgentLoop {
                 cached_tokens: resp.usage.cached_tokens,
                 latency_ms: resp.usage.latency_ms,
                 server_prompt_ms: resp.usage.server_prompt_ms,
-            });
-            emit(LoopEvent::AgentText(resp.content.clone()));
+            })
+            .await;
+            emit(LoopEvent::AgentText(resp.content.clone())).await;
             self.log(
                 "agent.message",
                 &json!({"turn": turn, "text": resp.content}),
@@ -149,7 +153,7 @@ impl AgentLoop {
 
             let (calls, warnings) = parse_tool_calls(&resp.content);
             for w in &warnings {
-                emit(LoopEvent::Warning(w.clone()));
+                emit(LoopEvent::Warning(w.clone())).await;
             }
             if !warnings.is_empty() {
                 // Feed the diagnostics back so the model can self-correct.
@@ -165,14 +169,18 @@ impl AgentLoop {
                 });
             }
 
-            emit(LoopEvent::ToolCalls(calls.clone()));
+            emit(LoopEvent::ToolCalls(calls.clone())).await;
             let results = match self
                 .executor
-                .run_chain(&calls, &|e| match e {
-                    ExecEvent::Started(c) => {
-                        let _ = c;
+                .run_chain(&calls, &|e| async move {
+                    match e {
+                        ExecEvent::Started(c) => {
+                            let _ = c;
+                        }
+                        ExecEvent::Finished(r) => {
+                            emit(LoopEvent::ToolResult(r)).await;
+                        }
                     }
-                    ExecEvent::Finished(r) => emit(LoopEvent::ToolResult(r)),
                 })
                 .await
             {

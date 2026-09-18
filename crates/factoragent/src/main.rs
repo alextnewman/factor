@@ -427,33 +427,34 @@ impl RpcHandler for SessionHandler {
     }
 }
 
-fn emit_to_peer(peer: &RpcPeer, ev: LoopEvent) {
+/// Serialize loop events onto the wire in order. This is awaited (not
+/// spawned) so notifications always land before the session.prompt
+/// response that follows them on the same stream.
+async fn emit_to_peer(peer: &RpcPeer, ev: LoopEvent) {
     let peer = peer.clone();
-    tokio::spawn(async move {
-        let (method, params) = match ev {
-            LoopEvent::AgentText(t) => ("event.agent_text", json!({"text": t})),
-            LoopEvent::ToolCalls(calls) => (
-                "event.tool_call",
-                json!({"calls": calls.iter().map(|c| json!({"name": c.name, "args": c.args})).collect::<Vec<_>>()}),
-            ),
-            LoopEvent::ToolResult(r) => (
-                "event.tool_result",
-                json!({"name": r.call.name, "ok": r.ok, "error": r.error, "duration_ms": r.duration_ms}),
-            ),
-            LoopEvent::Warning(w) => ("event.warning", json!({"text": w})),
-            LoopEvent::ModelUsage {
-                prompt_tokens,
-                completion_tokens,
-                cached_tokens,
-                latency_ms,
-                server_prompt_ms,
-            } => (
-                "event.model_usage",
-                json!({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
-                       "cached_tokens": cached_tokens, "latency_ms": latency_ms,
-                       "server_prompt_ms": server_prompt_ms}),
-            ),
-        };
-        let _ = peer.notify(method, params).await;
-    });
+    let (method, params) = match ev {
+        LoopEvent::AgentText(t) => ("event.agent_text", json!({"text": t})),
+        LoopEvent::ToolCalls(calls) => (
+            "event.tool_call",
+            json!({"calls": calls.iter().map(|c| json!({"name": c.name, "args": c.args})).collect::<Vec<_>>()}),
+        ),
+        LoopEvent::ToolResult(r) => (
+            "event.tool_result",
+            json!({"name": r.call.name, "ok": r.ok, "error": r.error, "duration_ms": r.duration_ms}),
+        ),
+        LoopEvent::Warning(w) => ("event.warning", json!({"text": w})),
+        LoopEvent::ModelUsage {
+            prompt_tokens,
+            completion_tokens,
+            cached_tokens,
+            latency_ms,
+            server_prompt_ms,
+        } => (
+            "event.model_usage",
+            json!({"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens,
+                   "cached_tokens": cached_tokens, "latency_ms": latency_ms,
+                   "server_prompt_ms": server_prompt_ms}),
+        ),
+    };
+    let _ = peer.notify(method, params).await;
 }

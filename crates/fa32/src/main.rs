@@ -266,7 +266,12 @@ async fn wait_for_endpoint(pipe: &str, timeout: Duration) -> Result<()> {
 }
 
 async fn prompt_once(client: &RpcClient<ClientHandler>, text: &str) -> Result<String> {
-    println!("you> {text}");
+    // When stdin is a live terminal the console already echoed the typed
+    // line above the prompt; re-printing it doubles the input. Only echo
+    // for piped/non-interactive stdin, where nothing echoed it.
+    if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        println!("you> {text}");
+    }
     let v = client
         .peer()
         .request("session.prompt", json!({"text": text}))
@@ -297,7 +302,10 @@ async fn repl(client: &RpcClient<ClientHandler>) -> Result<()> {
             break;
         }
         match prompt_once(client, text).await {
-            Ok(outcome) => println!("\n{outcome}\n"),
+            // The turn's agent text, tool calls, results, and usage were
+            // already rendered live from the event stream; the RPC return
+            // is just the turn-end ack, not a second copy of the text.
+            Ok(_) => {}
             Err(e) => eprintln!("error: {e:#}"),
         }
     }
