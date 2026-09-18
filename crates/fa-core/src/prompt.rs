@@ -103,6 +103,13 @@ pub fn build_block_b(facts: &SessionFacts) -> String {
 
 /// Assemble the full message list: system(Block A + Block B), history
 /// (Block C, append-only), suffix nudge.
+///
+/// The suffix rides as a `user` message with a `system:` prefix — NOT a
+/// second `system` message. Qwen3-class Jinja templates (llama.cpp's minja
+/// included) raise "System message must be at the beginning" for any
+/// system-role message past index 0, and the OpenAI convention is
+/// system-first anyway. Ordering (the §8.3 cache-stability property) is
+/// unchanged: the nudge still goes last; only its role changed.
 pub fn build_messages(
     block_a: &str,
     block_b: &str,
@@ -112,7 +119,7 @@ pub fn build_messages(
     let mut msgs = Vec::with_capacity(history.len() + 2);
     msgs.push(ChatMessage::system(format!("{block_a}\n{block_b}")));
     msgs.extend(history.iter().cloned());
-    msgs.push(ChatMessage::system(suffix.to_string()));
+    msgs.push(ChatMessage::user(format!("system: {suffix}")));
     msgs
 }
 
@@ -151,6 +158,14 @@ mod tests {
         assert_eq!(msgs[0].role, "system");
         assert!(msgs[0].content.starts_with("BLOCK-A\nBLOCK-B"));
         assert_eq!(msgs[1].content, "hi");
-        assert_eq!(msgs[3].content, "SUFFIX");
+        // The suffix goes last but must NOT be a system message: Qwen3-class
+        // Jinja templates reject any system role past index 0.
+        assert_eq!(msgs[3].role, "user");
+        assert!(msgs[3].content.ends_with("SUFFIX"));
+        assert_eq!(
+            msgs.iter().filter(|m| m.role == "system").count(),
+            1,
+            "exactly one system message, at index 0"
+        );
     }
 }
