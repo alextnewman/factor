@@ -627,9 +627,11 @@ central design question.
 
 **Roles.** The world is real and stateful. Within it, the operator is the
 mage and the model is the summoned golem. The mage holds intent and
-authority but acts indirectly — through words (prompts), names (precise
-specifications), and the binding circle (the sandbox: it holds or it
-doesn't). The golem is tireless, powerful, and perfectly literal; it does
+authority but acts indirectly — through incantations (prompts), names
+(precise specifications), and the binding circle (the sandbox: it holds or
+it doesn't). Incantations work by exact wording, spoken precisely; a sloppy
+incantation is how golems go wrong in the stories — which is why prompt
+craft here is binding-craft. The golem is tireless, powerful, and perfectly literal; it does
 exactly what it is told, which is its power and its characteristic failure
 mode. So the harness is written for a literalist: protocols a golem can't
 misread, and the Judgment Gate set where the mage's veto belongs — before
