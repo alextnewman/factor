@@ -19,13 +19,17 @@ use crate::protocol::ToolCall;
 use crate::session::SessionDb;
 use crate::{FaError, Result};
 
-/// Cmdlets that mutate the world: approval-gated.
+/// Cmdlets that mutate the world: approval-gated. Approval is about the
+/// *action*, not the venue: terminal lifecycle (New/Remove-FATerminal) is
+/// NOT gated — a terminal is a managed, empty room until a command runs in
+/// it, and spawning is deterministically bounded by FA_MAX_TERMINALS.
+/// There is no security signal in a human approving "a third terminal",
+/// so gating it would be theater; the privileged op is Invoke-FACommand,
+/// which names its terminal in the approval dialog.
 pub const MUTATING: &[&str] = &[
     "Write-FAFile",
     "Edit-FAFile",
-    "New-FATerminal",
     "Invoke-FACommand",
-    "Remove-FATerminal",
 ];
 
 /// Terminal-lifecycle cmdlets: mirrored into the session DB for audit.
@@ -287,4 +291,30 @@ pub fn args_of(json: &str) -> Map<String, Value> {
             _ => None,
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn approval_is_about_the_action_not_the_venue() {
+        // File writes and command execution are privileged. Terminal
+        // lifecycle is bounded by FA_MAX_TERMINALS instead of gated:
+        // a terminal is an empty managed room until a command runs in it.
+        for gated in ["Write-FAFile", "Edit-FAFile", "Invoke-FACommand"] {
+            assert!(Executor::needs_approval(gated), "{gated} must be approval-gated");
+        }
+        for ungated in [
+            "New-FATerminal",
+            "Remove-FATerminal",
+            "Get-FATerminal",
+            "Find-FAFile",
+            "Read-FAFile",
+            "Get-FATree",
+            "Get-FASession",
+        ] {
+            assert!(!Executor::needs_approval(ungated), "{ungated} must not be approval-gated");
+        }
+    }
 }

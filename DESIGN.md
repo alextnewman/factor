@@ -510,7 +510,11 @@ fork model punitive; warm, cultivated execution contexts are the Windows-native 
   one first. Lifecycle is explicit, consistent with the no-timeouts principle (§6).
 - **Approval** stays per invocation (chain), with the terminal named in the dialog
   (`run … in terminal 'build' (vs2022)`). Approval is about the *action*;
-  containment is already guaranteed by the invariant.
+  containment is already guaranteed by the invariant. Terminal *lifecycle*
+  (New/Remove-FATerminal) is deliberately NOT approval-gated: a terminal is a
+  managed, empty room until a command runs in it, spawning is bounded by
+  FA_MAX_TERMINALS (default 8, session-configurable), and there is no security
+  signal in a human approving "a third terminal" — gating it would be theater.
 - **Tradeoff, recorded honestly:** the fresh-process structural guarantee against
   cross-command covert channels is traded away. Mitigation is visibility + audit:
   terminals are named, listed, transcripted, operator-visible — first-class like
