@@ -584,6 +584,36 @@ decorators a home, so nothing is repeated memetically.
   sessions' buses (parent→child read is already the subagent pattern). ACLs for
   cross-session subscription ride with that work, not now.
 
+### 6.1 The world-map mental model — [DECIDED] (2026-09-18)
+
+The session is a game world — not a terminal session, and not a chat. The
+model is the player: it reads, writes, executes, and navigates. The operator
+is not the terminal's typist; the operator watches, judges (the Judgment
+Gate), and intervenes. The event stream is the game's event log; clients are
+cameras on the world, not shells.
+
+This reframes the renderer work: the text and Fluent views are two cameras on
+one simulation, and the glyph/sigil work was tileset design. A future
+world-view client renders the codebase as the world and tool calls as marks
+upon it — every action happens *somewhere*, and the world remembers.
+
+Engine obligations (some already true, some future work):
+
+- Every tool-call event carries an explicit `room`: the directory scope the
+  call acted in, derived from its paths. Renderers must not infer location
+  from argument strings. (Future work — the wire carries raw paths today.)
+- Rooms have stable identity (canonical repo-relative paths) so clients can
+  accumulate per-room history: reads, writes, executions, failures as marks
+  on the room.
+- Events already carry actor (`caused_by`) and outcome; the log's total order
+  is the shared source of truth every camera reads.
+- Product-language rule stands: game/world/maze/dungeon vocabulary lives in
+  design docs and internal metaphor, not in shipped client text, where the
+  operator sees the catalogue (drawers, INDEX cards, narrowing calls).
+
+Open: the operator's role in game terms (spectator? DM?) — the true client's
+central design question.
+
 ## 7. Security model
 
 ### 7.1 MXC sandboxing — [DECIDED]
