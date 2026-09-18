@@ -1,5 +1,11 @@
 # FactorClient — the real WinUI 3 prototype (View 2)
 
+> **Status: parked.** The native client WILL be built (it is the v1 definition
+> of done), but not until the metaphors and views are fully proven in the web
+> prototype (`workspace/your_files/winui3/fluent-web.html`, real
+> `@fluentui/web-components`), where iteration is cheap. This scaffold is the
+> landing zone, not the current work.
+
 This is not a mockup. It is a genuine WinUI 3 desktop app: real Mica on the
 window (`MicaBackdrop`, resolved by dwm), real `AcrylicBrush` on the judgment
 card, real `NavigationView` / `TabView` / `TreeView` / `InfoBadge`, real Reveal
