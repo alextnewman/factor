@@ -860,10 +860,14 @@ transactional and the fallback is honest line mode.
   even with the gate modal up (the modal's cached rows are keyed by
   terminal size, so the next render rebuilds them); it never dismisses
   the gate. Width/height are re-read on every render regardless.
-- **Gate corners (2026-09-19).** The gate frame uses square corners
-  (`┌┐└┘`), not rounded arcs: `╭`/`╰` rendered as blank in a real
-  terminal font in the wild while `─ │ ┌ ┐ └ ┘` were fine — the arcs
-  are the only non-universal glyphs in the frame, so they went.
+- **Gate frame (2026-09-19).** The gate frame is ASCII (`+`, `-`, `|`),
+  not box-drawing. Pixel measurement of a real terminal showed
+  box-drawing glyphs (`─ │ ┌ ┐ └ ┘ ╭ ╮ ╰ ╯`) rendering ~1 cell right of
+  text — a conspicuous gap on the frame's side that no byte-level fix
+  could address, because the emitted bytes were already correct
+  (`goto(0, …)`, no leading spaces). ASCII has no font-dependent metrics
+  and aligns everywhere. (An earlier "missing `╭`" diagnosis was wrong:
+  3x zoom showed the arcs rendered fine; the positioning was the bug.)
 - **Chrome polish (2026-09-19).** The chrome gained semantic hierarchy,
   not ornament. A `Face` (ink + bold flag) replaced bare `Ink` runs so
   emphasis survives wrapping: bold action print forms (`⚙ Tree crates`),
