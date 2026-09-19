@@ -548,6 +548,17 @@ fn split_at_width(s: &str, max: usize) -> (String, &str) {
     (s[..idx].to_string(), &s[idx..])
 }
 
+/// Truncate `s` to at most `max` display cells, appending `…` if anything
+/// was cut. A hard guarantee for framed output: the frame must never
+/// overflow, even if a width table disagrees with the terminal.
+pub fn truncate_to_width(s: &str, max: usize) -> String {
+    if disp_width(s) <= max {
+        return s.to_string();
+    }
+    let (head, _) = split_at_width(s, max.saturating_sub(1));
+    format!("{head}…")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

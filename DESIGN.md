@@ -868,8 +868,12 @@ transactional and the fallback is honest line mode.
   (2) `⚙` (U+2699) rendering as a 2-cell emoji in Windows Terminal
   while `is_wide` counted it as 1 — every gate row containing a gear
   was exactly 1 cell too wide, pushing the frame's right border
-  off-screen. `is_wide` now covers U+2699 and U+26A1 (⚡); a regression
-  test requires gate rows with wide sigils to be exactly `cols` cells.
+  off-screen. `is_wide` now covers U+2699 and U+26A1 (⚡). Defense in
+  depth: `gate_rows` wraps 4 short of the frame (2 for the continuation
+  indent + 2 safety margin for width-table disagreement), and
+  `gate_row` hard-truncates with `…` rather than ever overflowing — the
+  frame must never break, even if a width table is wrong. The complete
+  text always lives in the gate's spill file.
 - **Chrome polish (2026-09-19).** The chrome gained semantic hierarchy,
   not ornament. A `Face` (ink + bold flag) replaced bare `Ink` runs so
   emphasis survives wrapping: bold action print forms (`⚙ Tree crates`),

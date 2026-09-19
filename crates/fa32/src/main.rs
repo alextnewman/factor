@@ -854,9 +854,11 @@ fn approval_rows_from_wire(chain: &[Value], previews: &[Value]) -> Vec<(Face, St
 /// frame), strip `\r`, expand tabs, then wrap each physical line. Pure and
 /// unit-tested: no returned row contains a newline or exceeds `inner_max`.
 fn gate_rows(rows: &[(Face, String)], inner_max: usize) -> Vec<(Face, String)> {
-    // Continuation lines carry a 2-space indent, so wrap 2 short of the
-    // frame: the width invariant below must hold for every returned row.
-    let wrap_w = inner_max.saturating_sub(2).max(10);
+    // Continuation lines carry a 2-space indent, so wrap short of the
+    // frame. The extra 2-cell safety margin is deliberate: if a width
+    // table undercounts a glyph the terminal renders wide, the frame
+    // still holds. gate_row's truncation is the backstop.
+    let wrap_w = inner_max.saturating_sub(4).max(10);
     let mut out = Vec::new();
     for (face, text) in rows {
         for physical in text.split('\n') {
@@ -992,7 +994,12 @@ pub(crate) fn gate_bottom(style: &Style, cols: usize) -> String {
 /// One framed content row: `│ {text padded} │`.
 pub(crate) fn gate_row(style: &Style, face: Face, line: &str, cols: usize) -> String {
     let inner_max = cols.saturating_sub(4).max(20);
-    let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(line)));
+    // Hard guarantee: the frame never overflows. If a width table
+    // disagrees with the terminal (or a wrap miscalculates), cut the
+    // content rather than pushing the right border off-screen. The
+    // complete text always lives in the gate's spill file.
+    let line = style::truncate_to_width(line, inner_max);
+    let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(&line)));
     format!(
         "{} {} {}",
         style.paint(Ink::Amber, "│"),
@@ -1170,6 +1177,19 @@ mod tests {
             let row = gate_row(&style, Face::plain(Ink::Text), line, 80);
             assert_eq!(style::disp_width(&row), 80, "row: {row:?}");
         }
+    }
+
+    #[test]
+    fn gate_row_truncates_rather_than_overflowing() {
+        // Even if a line arrives wider than the frame (wrap bug, or a
+        // width table disagreeing with the terminal), the frame must
+        // never overflow: cut the content, keep the border.
+        let style = Style::plain();
+        let long = "⚙ ".to_string() + &"x".repeat(200);
+        let row = gate_row(&style, Face::plain(Ink::Text), &long, 80);
+        assert_eq!(style::disp_width(&row), 80, "row: {row:?}");
+        assert!(row.ends_with("│"), "right border intact: {row:?}");
+        assert!(row.contains('…'), "truncation is marked: {row:?}");
     }
 
     fn gate_rows_split_newlines_and_never_exceed_width() {
