@@ -353,7 +353,8 @@ async fn run_tui(
     scheme: &str,
 ) -> Result<()> {
     let (key_tx, mut key_rx) = mpsc::channel(64);
-    let _input_thread = tui::spawn_input_thread(key_tx);
+    let _input_thread = tui::spawn_input_thread(key_tx.clone());
+    let _resize_watcher = tui::spawn_resize_watcher(key_tx);
     let mut view = tui::View::new(
         session_id.to_string(),
         model.to_string(),
@@ -967,12 +968,14 @@ pub(crate) fn cap_gate_rows(
 pub(crate) fn gate_top(style: &Style, cols: usize) -> String {
     // Title knocked out of the top rule; the frame spans the full canvas.
     // (Char arithmetic, not byte length: every frame glyph is one cell.)
+    // Square corners, not rounded arcs: ╭/╰ render as blank in some
+    // terminal fonts, while ─ │ ┌ ┐ └ ┘ are universal.
     let title = " APPROVAL REQUESTED ";
-    let fill = cols.saturating_sub(3 + title.len() + 1); // ╭ ─ title ─…─ ╮
-    let mut top = String::from("╭─");
+    let fill = cols.saturating_sub(3 + title.len() + 1); // ┌ ─ title ─…─ ┐
+    let mut top = String::from("┌─");
     top.push_str(title);
     top.push_str(&"─".repeat(fill));
-    top.push('╮');
+    top.push('┐');
     style.paint(Ink::Amber, &top).to_string()
 }
 
@@ -981,7 +984,7 @@ pub(crate) fn gate_bottom(style: &Style, cols: usize) -> String {
     style
         .paint(
             Ink::Amber,
-            &format!("╰{}╯", "─".repeat(cols.saturating_sub(2))),
+            &format!("└{}┘", "─".repeat(cols.saturating_sub(2))),
         )
         .to_string()
 }
@@ -1147,6 +1150,21 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn gate_frame_uses_square_corners() {
+        // Rounded arcs (╭╰) render as blank in some terminal fonts;
+        // the frame must use the universal square corners.
+        let style = Style::plain();
+        let top = gate_top(&style, 80);
+        let bottom = gate_bottom(&style, 80);
+        assert!(top.starts_with("┌─"), "top-left corner: {top:?}");
+        assert!(top.ends_with("┐"), "top-right corner: {top:?}");
+        assert!(bottom.starts_with("└"), "bottom-left corner: {bottom:?}");
+        assert!(bottom.ends_with("┘"), "bottom-right corner: {bottom:?}");
+        assert!(!top.contains('╭') && !top.contains('╮'));
+        assert!(!bottom.contains('╰') && !bottom.contains('╯'));
+    }
+
     fn gate_rows_split_newlines_and_never_exceed_width() {
         // Multi-line PowerShell text becomes separate framed rows; \r is
         // stripped (a raw \r would rewind the cursor mid-frame); tabs expand.

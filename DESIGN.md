@@ -853,8 +853,17 @@ transactional and the fallback is honest line mode.
   complete executable text — width wraps it, height spills it to a file,
   nothing is silently truncated. Newline/tab/CR hardening applies to every
   rendering (styled modal, plain gate, spill) — one hardened path.
-- **Resize.** Width/height are re-read on every render; reflow happens on
-  the next key or server event (no explicit resize event).
+- **Resize.** A watcher thread polls the terminal size every 200 ms and
+  synthesizes `Key::Resize` on change — Windows has no SIGWINCH and the
+  input thread blocks on reads, so a quiet resize would otherwise leave a
+  stale layout until the next keypress or server event. The resize redraws
+  even with the gate modal up (the modal's cached rows are keyed by
+  terminal size, so the next render rebuilds them); it never dismisses
+  the gate. Width/height are re-read on every render regardless.
+- **Gate corners (2026-09-19).** The gate frame uses square corners
+  (`┌┐└┘`), not rounded arcs: `╭`/`╰` rendered as blank in a real
+  terminal font in the wild while `─ │ ┌ ┐ └ ┘` were fine — the arcs
+  are the only non-universal glyphs in the frame, so they went.
 - **Chrome polish (2026-09-19).** The chrome gained semantic hierarchy,
   not ornament. A `Face` (ink + bold flag) replaced bare `Ink` runs so
   emphasis survives wrapping: bold action print forms (`⚙ Tree crates`),

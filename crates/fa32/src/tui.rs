@@ -38,6 +38,9 @@ pub enum Key {
     Esc,
     CtrlC,
     CtrlD,
+    /// The terminal was resized: re-read the size and reflow. Not a real
+    /// key — synthesized by the resize watcher.
+    Resize,
     Ignored,
 }
 
@@ -506,6 +509,11 @@ fn handle_modal_key(view: &mut View, key: Key) -> KeyAction {
 }
 
 pub fn handle_key(view: &mut View, key: Key) -> KeyAction {
+    // A resize reflows everything, modal or not: the modal's cached rows
+    // are keyed by terminal size, so the next render rebuilds them.
+    if matches!(key, Key::Resize) {
+        return KeyAction::Redraw;
+    }
     if view.modal.is_some() {
         return handle_modal_key(view, key);
     }
@@ -550,6 +558,9 @@ pub fn handle_key(view: &mut View, key: Key) -> KeyAction {
         }
         Key::CtrlD => KeyAction::Quit,
         Key::Ignored => KeyAction::None,
+        // Resize is intercepted above (it must reflow even with a modal
+        // up); this arm is unreachable but keeps the match honest.
+        Key::Resize => KeyAction::Redraw,
         _ => edit_key(view, key),
     }
 }
@@ -896,6 +907,28 @@ pub fn spawn_input_thread(tx: mpsc::Sender<Key>) -> std::thread::JoinHandle<()> 
     })
 }
 
+/// A resize watcher: polls the terminal size and emits `Key::Resize` when
+/// it changes. Windows has no SIGWINCH and the input thread blocks on
+/// reads, so a quiet resize would otherwise leave a stale layout until
+/// the next keypress or server event. Boring, cross-platform, cheap —
+/// one syscall per 200 ms — and the render path already re-reads the size
+/// and reflows on every redraw.
+pub fn spawn_resize_watcher(tx: mpsc::Sender<Key>) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let mut last = style::term_size_raw();
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let now = style::term_size_raw();
+            if now != last {
+                last = now;
+                if tx.blocking_send(Key::Resize).is_err() {
+                    break;
+                }
+            }
+        }
+    })
+}
+
 #[cfg(unix)]
 fn read_byte() -> io::Result<u8> {
     let mut b = [0u8; 1];
@@ -1174,6 +1207,24 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn resize_redraws_with_and_without_modal() {
+        let mut v = view();
+        assert_eq!(handle_key(&mut v, Key::Resize), KeyAction::Redraw);
+        // With a modal up the resize must still reflow, not be swallowed.
+        let (tx, _rx) = oneshot::channel();
+        v.on_event(UiEvent::Approval {
+            chain: vec![ChainItem {
+                print: "Run x".into(),
+            }],
+            previews: vec![],
+            respond: tx,
+        });
+        assert!(v.has_modal());
+        assert_eq!(handle_key(&mut v, Key::Resize), KeyAction::Redraw);
+        assert!(v.has_modal(), "resize must not dismiss the gate");
+    }
+
     fn modal_keys_decide() {
         let mut v = view();
         let (tx, mut rx) = oneshot::channel();
