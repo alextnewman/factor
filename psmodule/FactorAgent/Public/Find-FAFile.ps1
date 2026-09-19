@@ -57,7 +57,7 @@ function Find-FAFile {
         String[]. Relative file paths — or, for large result sets, index
         cards naming the directory drawers that hold them.
     #>
-    # .PRINTFORM: Find {Pattern} in {Path}
+    # .PRINTFORM: Find {Pattern}
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Pattern,

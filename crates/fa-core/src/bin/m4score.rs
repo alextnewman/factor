@@ -25,15 +25,24 @@ struct Resp {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let db_path = std::env::args().nth(1).ok_or("usage: m4score <session.db> <session_id>")?;
-    let session_id = std::env::args().nth(2).ok_or("usage: m4score <session.db> <session_id>")?;
+    let db_path = std::env::args()
+        .nth(1)
+        .ok_or("usage: m4score <session.db> <session_id>")?;
+    let session_id = std::env::args()
+        .nth(2)
+        .ok_or("usage: m4score <session.db> <session_id>")?;
     let db = SessionDb::open(Path::new(&db_path))?;
     let events = db.events(&session_id)?;
 
     let mut resps: Vec<Resp> = Vec::new();
     for e in &events {
         if e.typ == "agent.message" {
-            let text = e.payload.get("text").and_then(|t| t.as_str()).unwrap_or("").to_string();
+            let text = e
+                .payload
+                .get("text")
+                .and_then(|t| t.as_str())
+                .unwrap_or("")
+                .to_string();
             let turn = e.payload.get("turn").and_then(|t| t.as_u64()).unwrap_or(0);
             let (calls, warnings) = parse_tool_calls(&text);
             resps.push(Resp {
@@ -77,7 +86,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         if r.n_warnings > 0 {
             episodes += 1;
-            let recovered = resps.get(i + 1).map(|n| n.n_warnings == 0 && n.n_calls > 0).unwrap_or(false);
+            let recovered = resps
+                .get(i + 1)
+                .map(|n| n.n_warnings == 0 && n.n_calls > 0)
+                .unwrap_or(false);
             if recovered {
                 recoveries += 1;
             }
@@ -105,7 +117,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     for e in &events {
         match e.typ.as_str() {
             "tool.result" => {
-                if e.payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if e.payload
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     tool_ok += 1;
                 } else {
                     tool_err += 1;
@@ -122,12 +138,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "llm.response" => {
-                prompt_tokens += e.payload.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                completion_tokens += e.payload.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                prompt_tokens += e
+                    .payload
+                    .get("prompt_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                completion_tokens += e
+                    .payload
+                    .get("completion_tokens")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
             }
             "turn.completed" => {
-                turns_used = e.payload.get("turns_used").and_then(|v| v.as_u64()).unwrap_or(0);
-                turn_ok = e.payload.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+                turns_used = e
+                    .payload
+                    .get("turns_used")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                turn_ok = e
+                    .payload
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
             }
             _ => {}
         }

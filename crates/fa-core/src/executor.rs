@@ -25,11 +25,7 @@ use crate::{FaError, Result};
 /// There is no security signal in a human approving "a third terminal",
 /// so gating it would be theater; the privileged op is Invoke-FACommand,
 /// which names its terminal in the approval dialog.
-pub const MUTATING: &[&str] = &[
-    "Write-FAFile",
-    "Edit-FAFile",
-    "Invoke-FACommand",
-];
+pub const MUTATING: &[&str] = &["Write-FAFile", "Edit-FAFile", "Invoke-FACommand"];
 
 /// Terminal-lifecycle cmdlets: mirrored into the session DB for audit.
 const TERMINAL_TOOLS: &[&str] = &[
@@ -115,7 +111,11 @@ impl Executor {
 
     /// Run one chain (one model turn's tool calls). Returns per-call results.
     /// `Err(FaError::Denied)` when the operator denies the chain.
-    pub async fn run_chain<F, Fut>(&mut self, calls: &[ToolCall], emit: &F) -> Result<Vec<ToolResult>>
+    pub async fn run_chain<F, Fut>(
+        &mut self,
+        calls: &[ToolCall],
+        emit: &F,
+    ) -> Result<Vec<ToolResult>>
     where
         F: Fn(ExecEvent) -> Fut + Sync,
         Fut: Future<Output = ()> + Send,
@@ -307,7 +307,10 @@ mod tests {
         // lifecycle is bounded by FA_MAX_TERMINALS instead of gated:
         // a terminal is an empty managed room until a command runs in it.
         for gated in ["Write-FAFile", "Edit-FAFile", "Invoke-FACommand"] {
-            assert!(Executor::needs_approval(gated), "{gated} must be approval-gated");
+            assert!(
+                Executor::needs_approval(gated),
+                "{gated} must be approval-gated"
+            );
         }
         for ungated in [
             "New-FATerminal",
@@ -318,7 +321,10 @@ mod tests {
             "Get-FATree",
             "Get-FASession",
         ] {
-            assert!(!Executor::needs_approval(ungated), "{ungated} must not be approval-gated");
+            assert!(
+                !Executor::needs_approval(ungated),
+                "{ungated} must not be approval-gated"
+            );
         }
     }
 }

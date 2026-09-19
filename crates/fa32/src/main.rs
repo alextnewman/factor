@@ -22,7 +22,7 @@ use tokio::sync::{mpsc, oneshot};
 mod screen;
 mod style;
 mod tui;
-use style::{Ink, Style};
+use style::{Face, Ink, Style};
 
 #[derive(Parser)]
 #[command(name = "fa32", about = "FactorAgent console client")]
@@ -834,7 +834,7 @@ fn ask_approval(
 
 /// Build the gate's content rows from wire values, via the shared
 /// row builder the TUI modal also uses.
-fn approval_rows_from_wire(chain: &[Value], previews: &[Value]) -> Vec<(Ink, String)> {
+fn approval_rows_from_wire(chain: &[Value], previews: &[Value]) -> Vec<(Face, String)> {
     let chain: Vec<tui::ChainItem> = chain
         .iter()
         .map(|c| tui::ChainItem {
@@ -852,16 +852,16 @@ fn approval_rows_from_wire(chain: &[Value], previews: &[Value]) -> Vec<(Ink, Str
 /// (PowerShell text is multi-line — a raw `\n` inside a row would break the
 /// frame), strip `\r`, expand tabs, then wrap each physical line. Pure and
 /// unit-tested: no returned row contains a newline or exceeds `inner_max`.
-fn gate_rows(rows: &[(Ink, String)], inner_max: usize) -> Vec<(Ink, String)> {
+fn gate_rows(rows: &[(Face, String)], inner_max: usize) -> Vec<(Face, String)> {
     // Continuation lines carry a 2-space indent, so wrap 2 short of the
     // frame: the width invariant below must hold for every returned row.
     let wrap_w = inner_max.saturating_sub(2).max(10);
     let mut out = Vec::new();
-    for (ink, text) in rows {
+    for (face, text) in rows {
         for physical in text.split('\n') {
             let physical = expand_tabs(physical.trim_end_matches('\r'));
             for (i, chunk) in style::wrap_text(&physical, wrap_w).into_iter().enumerate() {
-                out.push((*ink, if i == 0 { chunk } else { format!("  {chunk}") }));
+                out.push((*face, if i == 0 { chunk } else { format!("  {chunk}") }));
             }
         }
     }
@@ -891,7 +891,7 @@ static GATE_SPILL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::Ato
 
 /// Spill the gate's complete logical rows to a temp file so a height-capped
 /// gate never silently hides bytes the veto is judging. Returns the path.
-fn spill_gate_text(rows: &[(Ink, String)]) -> std::path::PathBuf {
+fn spill_gate_text(rows: &[(Face, String)]) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
         "fa32-gate-{}-{}.txt",
         std::process::id(),
@@ -911,7 +911,7 @@ fn spill_gate_text(rows: &[(Ink, String)]) -> std::path::PathBuf {
 /// wrapped (never truncated, never leaking past the frame). Massive inputs
 /// are height-capped to keep the veto on screen; the overflow spills to a
 /// file whose path is shown, so no byte is hidden from the operator.
-fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
+fn draw_gate(style: &Style, rows: &[(Face, String)]) {
     let (cols, term_rows) = style::term_size();
     let visible = cap_gate_rows(rows, cols, term_rows);
 
@@ -928,8 +928,8 @@ fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
     }
 
     println!("\n{}", gate_top(style, cols));
-    for (ink, line) in &visible {
-        println!("{}", gate_row(style, *ink, line, cols));
+    for (face, line) in &visible {
+        println!("{}", gate_row(style, *face, line, cols));
     }
     println!("{}", gate_bottom(style, cols));
 }
@@ -939,22 +939,25 @@ fn draw_gate(style: &Style, rows: &[(Ink, String)]) {
 /// to a file (shown in-frame) rather than silently truncating. Shared by the
 /// line-mode gate and the TUI modal.
 pub(crate) fn cap_gate_rows(
-    rows: &[(Ink, String)],
+    rows: &[(Face, String)],
     cols: usize,
     term_rows: usize,
-) -> Vec<(Ink, String)> {
+) -> Vec<(Face, String)> {
     let inner_max = cols.saturating_sub(4).max(20);
     let all = gate_rows(rows, inner_max);
     // Reserve frame + decision prompt so the gate never scrolls the veto
     // off-screen; floor keeps tiny terminals usable.
     let max_rows = term_rows.saturating_sub(10).max(10);
     let overflow = all.len().saturating_sub(max_rows);
-    let mut visible: Vec<(Ink, String)> = all.iter().take(max_rows).cloned().collect();
+    let mut visible: Vec<(Face, String)> = all.iter().take(max_rows).cloned().collect();
     if overflow > 0 {
         let path = spill_gate_text(rows);
         let note = format!("… {overflow} more lines — full text: {}", path.display());
         for (i, chunk) in style::wrap_text(&note, inner_max).into_iter().enumerate() {
-            visible.push((Ink::Dim, if i == 0 { chunk } else { format!("  {chunk}") }));
+            visible.push((
+                Face::plain(Ink::Dim),
+                if i == 0 { chunk } else { format!("  {chunk}") },
+            ));
         }
     }
     visible
@@ -964,7 +967,7 @@ pub(crate) fn cap_gate_rows(
 pub(crate) fn gate_top(style: &Style, cols: usize) -> String {
     // Title knocked out of the top rule; the frame spans the full canvas.
     // (Char arithmetic, not byte length: every frame glyph is one cell.)
-    let title = " approval requested ";
+    let title = " APPROVAL REQUESTED ";
     let fill = cols.saturating_sub(3 + title.len() + 1); // ╭ ─ title ─…─ ╮
     let mut top = String::from("╭─");
     top.push_str(title);
@@ -984,13 +987,13 @@ pub(crate) fn gate_bottom(style: &Style, cols: usize) -> String {
 }
 
 /// One framed content row: `│ {text padded} │`.
-pub(crate) fn gate_row(style: &Style, ink: Ink, line: &str, cols: usize) -> String {
+pub(crate) fn gate_row(style: &Style, face: Face, line: &str, cols: usize) -> String {
     let inner_max = cols.saturating_sub(4).max(20);
     let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(line)));
     format!(
         "{} {} {}",
         style.paint(Ink::Amber, "│"),
-        style.paint(ink, &format!("{line}{pad}")),
+        style.paint_face(face, &format!("{line}{pad}")),
         style.paint(Ink::Amber, "│")
     )
 }
@@ -1148,8 +1151,8 @@ mod tests {
         // Multi-line PowerShell text becomes separate framed rows; \r is
         // stripped (a raw \r would rewind the cursor mid-frame); tabs expand.
         let rows = vec![
-            (Ink::Text, "Run `$x = 1\r\n$y = 2".to_string()),
-            (Ink::Dim, "a\tb".to_string()),
+            (Face::plain(Ink::Text), "Run `$x = 1\r\n$y = 2".to_string()),
+            (Face::plain(Ink::Dim), "a\tb".to_string()),
         ];
         let out = gate_rows(&rows, 20);
         let texts: Vec<&str> = out.iter().map(|(_, s)| s.as_str()).collect();
@@ -1164,7 +1167,7 @@ mod tests {
 
     #[test]
     fn gate_rows_wrap_long_words_without_leaking() {
-        let rows = vec![(Ink::Text, "x".repeat(100))];
+        let rows = vec![(Face::plain(Ink::Text), "x".repeat(100))];
         let out = gate_rows(&rows, 20);
         assert!(out.len() > 1);
         for (_, line) in &out {

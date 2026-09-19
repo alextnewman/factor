@@ -18,7 +18,7 @@ use std::io::{self, Write};
 use tokio::sync::{mpsc, oneshot};
 
 use super::screen;
-use super::style::{self, Ink, Style};
+use super::style::{self, Face, Ink, Style};
 
 /// Keys the input thread can produce.
 #[derive(Debug, Clone)]
@@ -90,19 +90,19 @@ pub enum UiEvent {
 /// Build the gate's content rows from human-readable chain prints and
 /// preview strings. Shared by the line-mode gate and the TUI modal so the
 /// veto always speaks the same language.
-pub fn approval_rows(chain: &[ChainItem], previews: &[String]) -> Vec<(Ink, String)> {
-    let mut rows: Vec<(Ink, String)> = Vec::new();
+pub fn approval_rows(chain: &[ChainItem], previews: &[String]) -> Vec<(Face, String)> {
+    let mut rows: Vec<(Face, String)> = Vec::new();
     for item in chain {
-        rows.push((Ink::Text, format!("⚙ {}", item.print)));
+        rows.push((Face::bold(Ink::Text), format!("⚙ {}", item.print)));
     }
     if !previews.is_empty() {
-        rows.push((Ink::Faint, "─ detail ─".to_string()));
+        rows.push((Face::plain(Ink::Faint), "─ detail ─".to_string()));
         for p in previews {
-            rows.push((Ink::Dim, format!("  {p}")));
+            rows.push((Face::plain(Ink::Dim), format!("  {p}")));
         }
     }
     if rows.is_empty() {
-        rows.push((Ink::Dim, "(nothing to show)".to_string()));
+        rows.push((Face::plain(Ink::Dim), "(nothing to show)".to_string()));
     }
     rows
 }
@@ -110,16 +110,16 @@ pub fn approval_rows(chain: &[ChainItem], previews: &[String]) -> Vec<(Ink, Stri
 /// One logical (unwrapped) chronicle line: runs of ink + text.
 #[derive(Debug, Clone, Default)]
 struct Line {
-    segs: Vec<(Ink, String)>,
+    segs: Vec<(Face, String)>,
 }
 
 struct GateModal {
     /// Logical content rows: chain prints, divider, previews.
-    rows: Vec<(Ink, String)>,
+    rows: Vec<(Face, String)>,
     /// Cached (cols, rows) -> visible rows. `cap_gate_rows` spills overflow
     /// to a file as a side effect, so it must not run on every render —
     /// only when the modal opens or the terminal is resized.
-    capped: Option<(usize, usize, Vec<(Ink, String)>)>,
+    capped: Option<(usize, usize, Vec<(Face, String)>)>,
     chain_len: usize,
     editing: bool,
     edit_error: Option<String>,
@@ -130,7 +130,7 @@ struct GateModal {
 /// The screen model. Everything the renderer needs, nothing it doesn't.
 pub struct View {
     lines: Vec<Line>,
-    wrapped: Vec<Vec<(Ink, String)>>,
+    wrapped: Vec<Vec<(Face, String)>>,
     cache_width: usize,
     scroll: usize,
     input: Vec<char>,
@@ -175,17 +175,17 @@ impl View {
 
     /// Append a logical line; embedded newlines become separate lines.
     /// New content pins the scroll to the bottom.
-    fn push_line(&mut self, segs: &[(Ink, &str)]) {
-        let mut lines: Vec<Vec<(Ink, String)>> = Vec::new();
-        let mut cur: Vec<(Ink, String)> = Vec::new();
-        for (ink, text) in segs {
+    fn push_line(&mut self, segs: &[(Face, &str)]) {
+        let mut lines: Vec<Vec<(Face, String)>> = Vec::new();
+        let mut cur: Vec<(Face, String)> = Vec::new();
+        for (face, text) in segs {
             for chunk in text.split_inclusive('\n') {
                 match chunk.strip_suffix('\n') {
                     Some(part) => {
-                        push_run(&mut cur, *ink, part);
+                        push_run(&mut cur, *face, part);
                         lines.push(std::mem::take(&mut cur));
                     }
-                    None => push_run(&mut cur, *ink, chunk),
+                    None => push_run(&mut cur, *face, chunk),
                 }
             }
         }
@@ -204,7 +204,7 @@ impl View {
     fn rewrap(&mut self, cols: usize) {
         self.wrapped.clear();
         for line in &self.lines {
-            let refs: Vec<(Ink, &str)> = line.segs.iter().map(|(k, s)| (*k, s.as_str())).collect();
+            let refs: Vec<(Face, &str)> = line.segs.iter().map(|(k, s)| (*k, s.as_str())).collect();
             self.wrapped.extend(style::wrap_spans(&refs, cols));
         }
         self.cache_width = cols;
@@ -225,21 +225,45 @@ impl View {
         };
         if self.trail.as_deref() != Some(chain.as_str()) {
             self.trail = Some(chain.clone());
-            self.push_line(&[(Ink::Amber, "● "), (Ink::Dim, &chain)]);
+            self.push_line(&[
+                (Face::plain(Ink::Amber), "● "),
+                (Face::plain(Ink::Dim), &chain),
+            ]);
         }
     }
 
     pub fn on_event(&mut self, ev: UiEvent) {
         match ev {
             UiEvent::AgentText(t) => {
-                if !t.trim().is_empty() {
-                    self.push_line(&[(Ink::Gold, "agent> "), (Ink::Text, &t)]);
+                if t.trim().is_empty() {
+                    return;
+                }
+                // One chronicle line per source line: the `agent> ` prefix
+                // lands on the first only (push_line splits runs on \n, so
+                // pre-splitting keeps faces per line). Markdown fence lines
+                // the model emits are structural, not content — dim them.
+                let mut first = true;
+                for line in t.split('\n') {
+                    let face = if line.trim_start().starts_with("```") {
+                        Face::plain(Ink::Faint)
+                    } else {
+                        Face::plain(Ink::Text)
+                    };
+                    if first {
+                        self.push_line(&[(Face::bold(Ink::Violet), "agent> "), (face, line)]);
+                        first = false;
+                    } else {
+                        self.push_line(&[(face, line)]);
+                    }
                 }
             }
             UiEvent::ToolCall(calls) => {
                 for c in calls {
                     self.update_trail(c.room.as_deref(), c.root.as_deref());
-                    self.push_line(&[(Ink::Amber, "⚙ "), (Ink::Text, &c.print)]);
+                    self.push_line(&[
+                        (Face::plain(Ink::Amber), "⚙ "),
+                        (Face::bold(Ink::Text), &c.print),
+                    ]);
                 }
             }
             UiEvent::ToolResult {
@@ -250,15 +274,16 @@ impl View {
             } => {
                 if ok {
                     self.push_line(&[
-                        (Ink::Green, "✓ "),
-                        (Ink::Text, &print),
-                        (Ink::Dim, &format!(" ({ms}ms)")),
+                        (Face::plain(Ink::Green), "✓ "),
+                        (Face::bold(Ink::Text), &print),
+                        (Face::plain(Ink::Dim), &format!(" ({ms}ms)")),
                     ]);
                 } else {
-                    let mut segs = vec![(Ink::Red, "✗ "), (Ink::Red, print.as_str())];
+                    let red = Face::plain(Ink::Red);
+                    let mut segs = vec![(red, "✗ "), (red, print.as_str())];
                     if let Some(e) = error.as_deref() {
-                        segs.push((Ink::Red, ": "));
-                        segs.push((Ink::Red, e));
+                        segs.push((red, ": "));
+                        segs.push((red, e));
                     }
                     self.push_line(&segs);
                 }
@@ -270,12 +295,15 @@ impl View {
                 self.tokens = Some(format!("{prompt_tokens}+{completion_tokens}"));
             }
             UiEvent::Warning(msg) => {
-                self.push_line(&[(Ink::Amber, "! "), (Ink::Text, &msg)]);
+                self.push_line(&[
+                    (Face::plain(Ink::Amber), "! "),
+                    (Face::plain(Ink::Text), &msg),
+                ]);
             }
             UiEvent::Outcome(o) => {
                 self.working = false;
                 if !o.trim().is_empty() {
-                    self.push_line(&[(Ink::Dim, &o)]);
+                    self.push_line(&[(Face::plain(Ink::Dim), &o)]);
                 }
             }
             UiEvent::Approval {
@@ -310,7 +338,10 @@ impl View {
         if self.history.last().map(String::as_str) != Some(text.as_str()) {
             self.history.push(text.clone());
         }
-        self.push_line(&[(Ink::Amber, "you> "), (Ink::Text, &text)]);
+        self.push_line(&[
+            (Face::bold(Ink::Amber), "you> "),
+            (Face::plain(Ink::Text), &text),
+        ]);
         self.working = true;
         Some(text)
     }
@@ -321,13 +352,13 @@ impl View {
     }
 }
 
-fn push_run(cur: &mut Vec<(Ink, String)>, ink: Ink, text: &str) {
+fn push_run(cur: &mut Vec<(Face, String)>, face: Face, text: &str) {
     if text.is_empty() {
         return;
     }
     match cur.last_mut() {
-        Some((k, s)) if *k == ink => s.push_str(text),
-        _ => cur.push((ink, text.to_string())),
+        Some((k, s)) if *k == face => s.push_str(text),
+        _ => cur.push((face, text.to_string())),
     }
 }
 
@@ -523,35 +554,53 @@ pub fn handle_key(view: &mut View, key: Key) -> KeyAction {
     }
 }
 
-/// Draw the whole screen: top bar, chronicle, status bar, input row, and the
-/// approval modal when one is open.
-pub fn render(view: &mut View, style: &Style, out: &mut impl Write) -> io::Result<()> {
-    let (cols, rows) = style::term_size();
-    if view.cache_width != cols {
-        view.rewrap(cols);
+/// Build the top bar's face runs for a `wcols`-wide row: session on the
+/// left, model/scheme on the right. Pure (and unit-tested): the bar's
+/// display width never exceeds `wcols`, and the scheme name is never
+/// truncated — the model shrinks with a … and the session side gives way
+/// before either of them.
+///
+/// Callers pass `wcols` already net of the 1-col safety margin.
+fn build_top_bar(session_id: &str, model: &str, scheme: &str, wcols: usize) -> Vec<(Face, String)> {
+    let left = format!("◈ factoragent · {session_id}");
+    // The scheme is sacred: under extreme pressure the model side shrinks
+    // (from its right, with a … mark) before the scheme ever loses a cell.
+    let scheme_w = style::disp_width(scheme);
+    let sep = 3; // " · "
+    let mut model_vis = model.to_string();
+    let mut model_w = style::disp_width(model);
+    if model_w + sep + scheme_w > wcols {
+        let budget = wcols.saturating_sub(sep + scheme_w + 1); // room for …
+        let mut w = 0usize;
+        let mut n = 0usize;
+        for c in model.chars() {
+            let cw = style::char_width(c);
+            if w + cw > budget {
+                break;
+            }
+            w += cw;
+            n += 1;
+        }
+        model_vis = format!("{}…", model.chars().take(n).collect::<String>());
+        model_w = w + style::char_width('…');
     }
-    let ch = rows.saturating_sub(3); // top bar + status bar + input row
-    view.last_ch = ch;
-
-    // Top bar: session on the left, model/scheme on the right, exactly one
-    // row. The session side truncates first (from its left, keeping the
-    // session id's tail); the whole bar is hard-clipped as a guarantee.
-    screen::goto(0, 0, out)?;
-    let left = format!("◈ factoragent · {}", view.session_id);
-    let right = format!("{} · {}", view.model, view.scheme);
-    let right_w = style::disp_width(&right);
-    let budget = cols.saturating_sub(right_w + 2);
-    let left_vis = {
+    let right_w = model_w + sep + scheme_w;
+    // The left side is expendable: it shrinks first, and vanishes entirely
+    // (rather than pushing the sacred right side off) when nothing fits.
+    let left_budget = wcols.saturating_sub(right_w);
+    let left_vis = if left_budget == 0 {
+        String::new()
+    } else {
         let chars: Vec<char> = left.chars().collect();
         let total: usize = chars.iter().map(|c| style::char_width(*c)).sum();
-        if total <= budget {
+        if total <= left_budget {
             left
         } else {
             let mut w = 1; // room for the … mark
             let mut n = 0;
             for c in chars.iter().rev() {
                 let cw = style::char_width(*c);
-                if w + cw > budget {
+                if w + cw > left_budget {
                     break;
                 }
                 w += cw;
@@ -560,14 +609,52 @@ pub fn render(view: &mut View, style: &Style, out: &mut impl Write) -> io::Resul
             format!("…{}", chars[chars.len() - n..].iter().collect::<String>())
         }
     };
-    let gap = cols.saturating_sub(style::disp_width(&left_vis) + right_w);
-    let bar = vec![
-        (Ink::Dim, left_vis),
-        (Ink::Dim, " ".repeat(gap)),
-        (Ink::Dim, right),
-    ];
-    for (ink, text) in clip_spans(&bar, cols) {
-        write!(out, "{}", style.paint(ink, &text))?;
+    let left_w = style::disp_width(&left_vis);
+    // Any residual over-width eats the gap first, never the model/scheme.
+    let mut gap = wcols.saturating_sub(left_w + right_w);
+    while left_w + gap + right_w > wcols && gap > 0 {
+        gap -= 1;
+    }
+    let mut bar: Vec<(Face, String)> = Vec::new();
+    // The ◈ gets its gold; a truncated session side (…-prefixed) stays dim.
+    if let Some(rest) = left_vis.strip_prefix('◈') {
+        bar.push((Face::plain(Ink::Gold), "◈".to_string()));
+        bar.push((Face::plain(Ink::Dim), rest.to_string()));
+    } else {
+        bar.push((Face::plain(Ink::Dim), left_vis));
+    }
+    bar.push((Face::plain(Ink::Dim), " ".repeat(gap)));
+    bar.push((Face::plain(Ink::Dim), format!("{model_vis} · ")));
+    bar.push((Face::plain(Ink::Amber), scheme.to_string()));
+    bar
+}
+
+/// Draw the whole screen: top bar, chronicle, input rule, status bar,
+/// input row, and the approval modal when one is open.
+pub fn render(view: &mut View, style: &Style, out: &mut impl Write) -> io::Result<()> {
+    // The chrome spans the real window: term_size_raw, not the gate's
+    // conservative clamp. One column of safety margin on the chrome bars:
+    // measured width and the terminal's true width have disagreed by a
+    // cell in the wild (a clipped scheme name), and a 1-col margin is
+    // invisible while a clipped model name is not.
+    let (cols, rows) = style::term_size_raw();
+    let wcols = cols.saturating_sub(1).max(20);
+    if view.cache_width != cols {
+        view.rewrap(cols);
+    }
+    let ch = rows.saturating_sub(4); // top bar + input rule + status bar + input row
+    view.last_ch = ch;
+
+    // Top bar: session on the left, model/scheme on the right, exactly one
+    // row. The session side truncates first (from its left, keeping the
+    // session id's tail); the model/scheme side is never clipped — any
+    // over-width eats the gap first.
+    screen::goto(0, 0, out)?;
+    for (face, text) in clip_spans(
+        &build_top_bar(&view.session_id, &view.model, &view.scheme, wcols),
+        wcols,
+    ) {
+        write!(out, "{}", style.paint_face(face, &text))?;
     }
     screen::clear_eol(out)?;
 
@@ -577,8 +664,8 @@ pub fn render(view: &mut View, style: &Style, out: &mut impl Write) -> io::Resul
     let start = end.saturating_sub(ch);
     for (i, line) in view.wrapped.iter().enumerate().take(end).skip(start) {
         screen::goto(0, 1 + i - start, out)?;
-        for (ink, text) in line {
-            write!(out, "{}", style.paint(*ink, text))?;
+        for (face, text) in line {
+            write!(out, "{}", style.paint_face(*face, text))?;
         }
         screen::clear_eol(out)?;
     }
@@ -588,11 +675,22 @@ pub fn render(view: &mut View, style: &Style, out: &mut impl Write) -> io::Resul
         screen::clear_eol(out)?;
     }
 
+    // Input rule: a faint delineation between the chronicle and the
+    // command area, like the mock's input bar border-top. The rule is
+    // structural (it marks the command region), not ornament.
+    screen::goto(0, rows.saturating_sub(3), out)?;
+    write!(
+        out,
+        "{}",
+        style.paint_face(Face::plain(Ink::Faint), &"─".repeat(wcols))
+    )?;
+    screen::clear_eol(out)?;
+
     // Status bar: one row, clipped — a long trail never wraps into input.
     screen::goto(0, rows.saturating_sub(2), out)?;
-    let status = clip_spans(&status_line(view), cols);
-    for (ink, text) in &status {
-        write!(out, "{}", style.paint(*ink, text))?;
+    let status = clip_spans(&status_line(view), wcols);
+    for (face, text) in &status {
+        write!(out, "{}", style.paint_face(*face, text))?;
     }
     screen::clear_eol(out)?;
 
@@ -605,14 +703,18 @@ pub fn render(view: &mut View, style: &Style, out: &mut impl Write) -> io::Resul
     } else {
         "you> "
     };
-    write!(out, "{}", style.paint(Ink::Amber, prompt))?;
+    write!(out, "{}", style.paint_face(Face::bold(Ink::Amber), prompt))?;
     let prompt_w = style::disp_width(prompt);
     let avail = cols.saturating_sub(prompt_w).max(1);
     let cursor = view.cursor.min(view.input.len());
     let (off, end) = input_viewport(&view.input, cursor, view.input_off, avail);
     view.input_off = off;
     let visible_input: String = view.input[off..end].iter().collect();
-    write!(out, "{}", style.paint(Ink::Text, &visible_input))?;
+    write!(
+        out,
+        "{}",
+        style.paint_face(Face::plain(Ink::Text), &visible_input)
+    )?;
     screen::clear_eol(out)?;
     let cursor_col = prompt_w
         + view.input[off..cursor]
@@ -665,10 +767,10 @@ fn input_viewport(input: &[char], cursor: usize, off: usize, avail: usize) -> (u
 /// Clip inked spans to `cols` display columns without cutting UTF-8.
 /// The top and status bars are single terminal rows; they must never wrap
 /// into their neighbors no matter how long the trail or token readout gets.
-fn clip_spans(spans: &[(Ink, String)], cols: usize) -> Vec<(Ink, String)> {
+fn clip_spans(spans: &[(Face, String)], cols: usize) -> Vec<(Face, String)> {
     let mut out = Vec::new();
     let mut w = 0;
-    for (ink, text) in spans {
+    for (face, text) in spans {
         if w >= cols {
             break;
         }
@@ -684,7 +786,7 @@ fn clip_spans(spans: &[(Ink, String)], cols: usize) -> Vec<(Ink, String)> {
             kept.push(c);
         }
         if !kept.is_empty() {
-            out.push((*ink, kept));
+            out.push((*face, kept));
         }
         if cut || w >= cols {
             break;
@@ -693,17 +795,17 @@ fn clip_spans(spans: &[(Ink, String)], cols: usize) -> Vec<(Ink, String)> {
     out
 }
 
-fn status_line(view: &View) -> Vec<(Ink, String)> {
-    let mut segs: Vec<(Ink, String)> = vec![(Ink::Amber, "● ".to_string())];
+fn status_line(view: &View) -> Vec<(Face, String)> {
+    let mut segs: Vec<(Face, String)> = vec![(Face::plain(Ink::Amber), "● ".to_string())];
     segs.push((
-        Ink::Dim,
+        Face::plain(Ink::Dim),
         view.trail.clone().unwrap_or_else(|| "—".to_string()),
     ));
     if let Some(tok) = &view.tokens {
-        segs.push((Ink::Dim, format!("   tok {tok}")));
+        segs.push((Face::plain(Ink::Dim), format!("   tok {tok}")));
     }
     segs.push((
-        if view.working { Ink::Amber } else { Ink::Dim },
+        Face::plain(if view.working { Ink::Amber } else { Ink::Dim }),
         if view.working {
             "   working…".to_string()
         } else {
@@ -711,7 +813,7 @@ fn status_line(view: &View) -> Vec<(Ink, String)> {
         },
     ));
     if view.scroll > 0 {
-        segs.push((Ink::Dim, "   ▲ scrolled".to_string()));
+        segs.push((Face::plain(Ink::Dim), "   ▲ scrolled".to_string()));
     }
     segs
 }
@@ -740,30 +842,37 @@ fn draw_modal(
         .as_ref()
         .map(|(_, _, v)| v.clone())
         .unwrap_or_default();
-    // Tiny terminals: the modal must never cover the status/input rows.
-    let max_box_h = rows.saturating_sub(2).max(6);
+    // Tiny terminals: the modal must never cover the chrome rows
+    // (input rule, status bar, input row).
+    let max_box_h = rows.saturating_sub(3).max(6);
     if visible.len() + 3 > max_box_h {
         visible.truncate(max_box_h.saturating_sub(3));
     }
     // Footer: decision keys, or the edit-args state.
-    let footer: (Ink, String) = if modal.editing {
+    let footer: (Face, String) = if modal.editing {
         match &modal.edit_error {
-            Some(e) => (Ink::Red, format!("  {e}")),
-            None => (Ink::Dim, "  Enter to submit · Esc to cancel".to_string()),
+            Some(e) => (Face::plain(Ink::Red), format!("  {e}")),
+            None => (
+                Face::plain(Ink::Dim),
+                "  Enter to submit · Esc to cancel".to_string(),
+            ),
         }
     } else if modal.chain_len == 1 {
-        (Ink::Dim, "  [a]pprove · [d]eny · [e]dit args".to_string())
+        (
+            Face::plain(Ink::Dim),
+            "  [a]pprove · [d]eny · [e]dit args".to_string(),
+        )
     } else {
-        (Ink::Dim, "  [a]pprove · [d]eny".to_string())
+        (Face::plain(Ink::Dim), "  [a]pprove · [d]eny".to_string())
     };
     let box_h = visible.len() + 3; // top + footer + bottom
     let y0 = rows.saturating_sub(box_h) / 2;
     screen::goto(0, y0, out)?;
     write!(out, "{}", super::gate_top(style, cols))?;
     screen::clear_eol(out)?;
-    for (i, (ink, line)) in visible.iter().enumerate() {
+    for (i, (face, line)) in visible.iter().enumerate() {
         screen::goto(0, y0 + 1 + i, out)?;
-        write!(out, "{}", super::gate_row(style, *ink, line, cols))?;
+        write!(out, "{}", super::gate_row(style, *face, line, cols))?;
         screen::clear_eol(out)?;
     }
     screen::goto(0, y0 + 1 + visible.len(), out)?;
@@ -1158,8 +1267,8 @@ mod tests {
     #[test]
     fn clip_spans_never_exceeds_cols_or_cuts_utf8() {
         let spans = vec![
-            (Ink::Dim, "● winagent32 › ".to_string()),
-            (Ink::Text, "some very long trail …".to_string()),
+            (Face::plain(Ink::Dim), "● winagent32 › ".to_string()),
+            (Face::plain(Ink::Text), "some very long trail …".to_string()),
         ];
         let clipped = clip_spans(&spans, 20);
         let w: usize = clipped
@@ -1176,10 +1285,108 @@ mod tests {
 
     #[test]
     fn clip_spans_empty_and_tiny() {
-        let spans = vec![(Ink::Dim, "hello".to_string())];
+        let spans = vec![(Face::plain(Ink::Dim), "hello".to_string())];
         assert!(clip_spans(&spans, 0).is_empty());
         let one = clip_spans(&spans, 1);
         let text: String = one.iter().map(|(_, t)| t.as_str()).collect();
         assert_eq!(text, "h");
+    }
+
+    /// The observed Windows clip: with the exact strings from the field,
+    /// the bar must fit `wcols` and keep the scheme name whole.
+    #[test]
+    fn top_bar_never_exceeds_width_and_keeps_scheme() {
+        let bar = build_top_bar("sess-18d69c87c06f60c0-22860", "qwen3.8–27b", "ember", 160);
+        let w: usize = bar
+            .iter()
+            .flat_map(|(_, t)| t.chars())
+            .map(style::char_width)
+            .sum();
+        assert!(w <= 160, "bar width {w} exceeds 160");
+        let text: String = bar.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(text.ends_with("ember"), "scheme clipped: {text:?}");
+        assert!(text.starts_with("◈"), "sigil lost: {text:?}");
+    }
+
+    /// On a tiny terminal the session side gives way first; the
+    /// model/scheme side is never truncated.
+    #[test]
+    fn top_bar_tiny_terminal_keeps_scheme() {
+        let bar = build_top_bar("sess-1234567890abcdef", "qwen3.8-27b", "ember", 30);
+        let w: usize = bar
+            .iter()
+            .flat_map(|(_, t)| t.chars())
+            .map(style::char_width)
+            .sum();
+        assert!(w <= 30, "bar width {w} exceeds 30");
+        let text: String = bar.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(text.ends_with("ember"), "scheme clipped: {text:?}");
+    }
+
+    /// Under extreme pressure the model shrinks with a … before the scheme
+    /// ever loses a cell.
+    #[test]
+    fn top_bar_long_model_keeps_scheme_whole() {
+        let bar = build_top_bar("s", "llama-3.3-70b-instruct-q4_k_m", "parchment", 30);
+        let w: usize = bar
+            .iter()
+            .flat_map(|(_, t)| t.chars())
+            .map(style::char_width)
+            .sum();
+        assert!(w <= 30, "bar width {w} exceeds 30");
+        let text: String = bar.iter().map(|(_, t)| t.as_str()).collect();
+        assert!(text.ends_with("parchment"), "scheme clipped: {text:?}");
+        assert!(text.contains('…'), "model should show truncation: {text:?}");
+    }
+
+    /// A full headless frame: top bar, chronicle, input rule, status bar,
+    /// input row all render without error and carry their markers.
+    #[test]
+    fn render_full_frame_writes_chrome_rows() {
+        let mut v = view();
+        v.on_event(UiEvent::AgentText("hello".into()));
+        v.input = "hi".chars().collect();
+        v.cursor = 2;
+        let style = Style::plain();
+        let mut out = Vec::new();
+        render(&mut v, &style, &mut out).expect("render failed");
+        let text = String::from_utf8(out).expect("render output is UTF-8");
+        assert!(text.contains("◈ factoragent · sess-1"), "top bar missing");
+        assert!(text.contains("model · ember"), "model/scheme missing");
+        assert!(text.contains("agent> hello"), "chronicle missing");
+        assert!(text.contains("─"), "input rule missing");
+        assert!(text.contains("idle"), "status bar missing");
+        assert!(text.contains("you> hi"), "input row missing");
+    }
+
+    /// Markdown fences in agent text are structural chrome: dimmed, and the
+    /// `agent> ` prefix lands on the first line only.
+    #[test]
+    fn agent_text_fences_dim_and_prefix_first_line_only() {
+        let mut v = view();
+        v.on_event(UiEvent::AgentText("hello\n```fa\ncall X\n```".into()));
+        assert_eq!(v.lines.len(), 4);
+        let first: Vec<(Face, &str)> = v.lines[0]
+            .segs
+            .iter()
+            .map(|(f, s)| (*f, s.as_str()))
+            .collect();
+        assert_eq!(
+            first,
+            vec![
+                (Face::bold(Ink::Violet), "agent> "),
+                (Face::plain(Ink::Text), "hello")
+            ]
+        );
+        for (i, line) in v.lines.iter().enumerate().skip(1) {
+            assert_eq!(line.segs.len(), 1);
+            // "```fa" and "```" are fences (dim); "call X" is content.
+            let want = if i == 2 {
+                Face::plain(Ink::Text)
+            } else {
+                Face::plain(Ink::Faint)
+            };
+            assert_eq!(line.segs[0].0, want);
+        }
     }
 }

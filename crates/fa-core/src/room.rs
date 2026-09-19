@@ -90,10 +90,11 @@ pub fn room_for_args(
                 cur = c.parent();
             }
         }
-        let rel = match cand.and_then(|c| c.strip_prefix(workspace_root).ok().map(Path::to_path_buf)) {
-            Some(r) => r,
-            None => continue,
-        };
+        let rel =
+            match cand.and_then(|c| c.strip_prefix(workspace_root).ok().map(Path::to_path_buf)) {
+                Some(r) => r,
+                None => continue,
+            };
         let depth = rel.components().count();
         let deeper = best.as_ref().is_none_or(|(d, _)| depth > *d);
         if deeper {
@@ -174,10 +175,7 @@ mod tests {
     fn nonexistent_file_yields_nearest_existing_ancestor() {
         let (_g, root) = tree();
         let a = args(json!({"Path": "crates/newdir/draft.ps1"}));
-        assert_eq!(
-            room_for_args(&a, &root, &root),
-            Some("crates".to_string())
-        );
+        assert_eq!(room_for_args(&a, &root, &root), Some("crates".to_string()));
     }
 
     #[test]

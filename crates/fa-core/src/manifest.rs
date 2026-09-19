@@ -105,7 +105,10 @@ pub fn render_tools(schemas: &[ToolSchema]) -> String {
 /// renders as compact JSON. A placeholder with no matching argument is
 /// left untouched — visible breakage beats silent wrongness. No escaping,
 /// no conditionals: deliberately dumb, per the print-form contract.
-pub fn expand_print_form(template: &str, args: &serde_json::Map<String, serde_json::Value>) -> String {
+pub fn expand_print_form(
+    template: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> String {
     let mut out = String::with_capacity(template.len());
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -116,9 +119,7 @@ pub fn expand_print_form(template: &str, args: &serde_json::Map<String, serde_js
                 let key = &after[..end];
                 match args.get(key) {
                     Some(serde_json::Value::String(s)) => out.push_str(s),
-                    Some(other) => {
-                        out.push_str(&serde_json::to_string(other).unwrap_or_default())
-                    }
+                    Some(other) => out.push_str(&serde_json::to_string(other).unwrap_or_default()),
                     None => {
                         out.push('{');
                         out.push_str(key);
@@ -221,7 +222,10 @@ mod tests {
     #[test]
     fn expand_substitutes_bound_params() {
         let mut args = serde_json::Map::new();
-        args.insert("Path".into(), serde_json::json!("crates/factoragent/tests/m1_bridge.rs"));
+        args.insert(
+            "Path".into(),
+            serde_json::json!("crates/factoragent/tests/m1_bridge.rs"),
+        );
         assert_eq!(
             expand_print_form("Read {Path}", &args),
             "Read crates/factoragent/tests/m1_bridge.rs"
@@ -233,7 +237,10 @@ mod tests {
         let mut args = serde_json::Map::new();
         args.insert("Pattern".into(), serde_json::json!("*"));
         args.insert("Path".into(), serde_json::json!("."));
-        assert_eq!(expand_print_form("Find {Pattern} in {Path}", &args), "Find * in .");
+        assert_eq!(
+            expand_print_form("Find {Pattern} in {Path}", &args),
+            "Find * in ."
+        );
     }
 
     #[test]

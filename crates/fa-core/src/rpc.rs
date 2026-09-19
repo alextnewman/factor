@@ -48,7 +48,10 @@ pub mod endpoint {
 
     /// Socket file for a session.
     pub fn path_for(state_dir: &Path, session_id: &str) -> PathBuf {
-        state_dir.join("sessions").join(session_id).join("session.sock")
+        state_dir
+            .join("sessions")
+            .join(session_id)
+            .join("session.sock")
     }
 
     pub async fn bind(path: &Path) -> Result<Listener> {

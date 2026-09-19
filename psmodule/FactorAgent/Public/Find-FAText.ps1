@@ -65,7 +65,7 @@ function Find-FAText {
         large result sets, index cards (LineNumber 0) naming the files
         that hold the hits.
     #>
-    # .PRINTFORM: Find text {Pattern} in {Path}
+    # .PRINTFORM: Find text {Pattern}
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Pattern,

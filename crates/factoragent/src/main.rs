@@ -105,7 +105,8 @@ async fn async_main(cli: Cli) -> Result<()> {
     let session_id = session_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let session_dir = state_dir.join("sessions").join(&session_id);
     let dialect = resolve_dialect(dialect.as_deref(), &state_dir)?;
-    tracing::info!("script dialect: {dialect}");    std::fs::create_dir_all(&session_dir)?;
+    tracing::info!("script dialect: {dialect}");
+    std::fs::create_dir_all(&session_dir)?;
     let lock_path = session_dir.join("session.lock");
     let db_path = session_dir.join("session.db");
     #[cfg(unix)]

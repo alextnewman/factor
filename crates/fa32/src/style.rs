@@ -29,6 +29,25 @@ pub enum Ink {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
+/// A text face: semantic ink plus emphasis. Width measurement ignores
+/// emphasis — SGR bytes are zero-width — so wrapping and clipping treat
+/// a bold run exactly like its plain twin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Face {
+    pub ink: Ink,
+    pub bold: bool,
+}
+
+impl Face {
+    pub const fn plain(ink: Ink) -> Self {
+        Face { ink, bold: false }
+    }
+
+    pub const fn bold(ink: Ink) -> Self {
+        Face { ink, bold: true }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Scheme {
     pub name: &'static str,
@@ -156,10 +175,16 @@ impl Style {
 
     /// Paint `text` in a semantic ink. Returns `text` unchanged in plain mode.
     pub fn paint(&self, ink: Ink, text: &str) -> String {
+        self.paint_face(Face::plain(ink), text)
+    }
+
+    /// Paint `text` in a face (ink + optional bold). Bold is emphasis only:
+    /// it never changes display width. Returns `text` unchanged in plain.
+    pub fn paint_face(&self, face: Face, text: &str) -> String {
         match self.mode {
             Mode::Plain => text.to_string(),
             Mode::TrueColor => {
-                let rgb = match ink {
+                let rgb = match face.ink {
                     Ink::Text => match self.scheme.text {
                         Some(c) => c,
                         None => return text.to_string(),
@@ -173,10 +198,14 @@ impl Style {
                     Ink::Gold => self.scheme.gold,
                     Ink::Violet => self.scheme.violet,
                 };
-                format!("\x1b[38;2;{};{};{}m{text}\x1b[0m", rgb.0, rgb.1, rgb.2)
+                if face.bold {
+                    format!("\x1b[1;38;2;{};{};{}m{text}\x1b[0m", rgb.0, rgb.1, rgb.2)
+                } else {
+                    format!("\x1b[38;2;{};{};{}m{text}\x1b[0m", rgb.0, rgb.1, rgb.2)
+                }
             }
             Mode::Native => {
-                let code: &str = match ink {
+                let code: &str = match face.ink {
                     Ink::Text => return text.to_string(),
                     Ink::Dim | Ink::Faint => "90",
                     Ink::Amber => "33",
@@ -186,7 +215,11 @@ impl Style {
                     Ink::Cyan => "36",
                     Ink::Violet => "35",
                 };
-                format!("\x1b[{code}m{text}\x1b[0m")
+                if face.bold {
+                    format!("\x1b[1;{code}m{text}\x1b[0m")
+                } else {
+                    format!("\x1b[{code}m{text}\x1b[0m")
+                }
             }
         }
     }
@@ -201,13 +234,21 @@ fn dumb_term() -> bool {
     std::env::var("TERM").is_ok_and(|t| t == "dumb")
 }
 
-/// Terminal width in columns for width-aware rendering (the gate frame).
-/// Falls back to 80 when undetectable; clamped to a sane range.
 /// Terminal size as (columns, rows). Columns clamp to 40–160, rows to
 /// 10–60; the probe fails (piped, redirected, dumb terminals) → (80, 24).
+/// The clamp keeps the line-mode gate frame sane on absurdly wide windows.
 pub fn term_size() -> (usize, usize) {
     match term_size_os() {
         Some((w, h)) => (w.clamp(40, 160), h.clamp(10, 60)),
+        None => (80, 24),
+    }
+}
+
+/// Terminal size without the gate's conservative clamp: the full-screen
+/// TUI chrome spans the real window. Floored so tiny terminals stay usable.
+pub fn term_size_raw() -> (usize, usize) {
+    match term_size_os() {
+        Some((w, h)) => (w.max(20), h.max(10)),
         None => (80, 24),
     }
 }
@@ -354,46 +395,46 @@ fn wrap_core(text: &str, max: usize) -> Vec<String> {
     lines
 }
 
-/// Word-wrap runs of `(ink, text)` to `max` display columns, keeping each
-/// character's ink across wraps. Returns lines of `(ink, text)` runs with
-/// adjacent same-ink runs merged.
+/// Word-wrap runs of `(face, text)` to `max` display columns, keeping each
+/// character's face across wraps. Returns lines of `(face, text)` runs with
+/// adjacent same-face runs merged.
 ///
 /// The full-screen renderer needs this (rather than wrapping painted text)
 /// because ANSI escape bytes would corrupt naive width measurement.
 /// Embedded newlines are hard breaks; overlong words are hard-split.
-pub fn wrap_spans(spans: &[(Ink, &str)], max: usize) -> Vec<Vec<(Ink, String)>> {
+pub fn wrap_spans(spans: &[(Face, &str)], max: usize) -> Vec<Vec<(Face, String)>> {
     let max = max.max(1);
-    // Split into paragraphs on newlines, keeping per-char ink.
-    let mut paras: Vec<Vec<(Ink, char)>> = vec![Vec::new()];
-    for (ink, text) in spans {
+    // Split into paragraphs on newlines, keeping per-char face.
+    let mut paras: Vec<Vec<(Face, char)>> = vec![Vec::new()];
+    for (face, text) in spans {
         for ch in text.chars() {
             if ch == '\n' {
                 paras.push(Vec::new());
             } else {
-                paras.last_mut().expect("paragraph").push((*ink, ch));
+                paras.last_mut().expect("paragraph").push((*face, ch));
             }
         }
     }
-    let mut out: Vec<Vec<(Ink, String)>> = Vec::new();
+    let mut out: Vec<Vec<(Face, String)>> = Vec::new();
     for para in paras {
         // Tokenize into words on spaces.
-        let mut words: Vec<Vec<(Ink, char)>> = Vec::new();
-        let mut cur: Vec<(Ink, char)> = Vec::new();
-        for (ink, ch) in para {
+        let mut words: Vec<Vec<(Face, char)>> = Vec::new();
+        let mut cur: Vec<(Face, char)> = Vec::new();
+        for (face, ch) in para {
             if ch == ' ' {
                 if !cur.is_empty() {
                     words.push(std::mem::take(&mut cur));
                 }
             } else {
-                cur.push((ink, ch));
+                cur.push((face, ch));
             }
         }
         if !cur.is_empty() {
             words.push(cur);
         }
         // Greedy pack; each line is a list of words.
-        let mut lines: Vec<Vec<Vec<(Ink, char)>>> = Vec::new();
-        let mut line: Vec<Vec<(Ink, char)>> = Vec::new();
+        let mut lines: Vec<Vec<Vec<(Face, char)>>> = Vec::new();
+        let mut line: Vec<Vec<(Face, char)>> = Vec::new();
         let mut width = 0usize;
         for word in words {
             if word_width(&word) > max {
@@ -426,28 +467,29 @@ pub fn wrap_spans(spans: &[(Ink, &str)], max: usize) -> Vec<Vec<(Ink, String)>> 
         if !line.is_empty() || lines.is_empty() {
             lines.push(line);
         }
-        // Flatten each line back to merged ink runs.
+        // Flatten each line back to merged face runs.
         for line_words in lines {
-            let mut chars: Vec<(Ink, char)> = Vec::new();
+            let mut chars: Vec<(Face, char)> = Vec::new();
             for (i, word) in line_words.into_iter().enumerate() {
                 if i > 0 {
-                    let ink = chars
-                        .last()
-                        .map(|(k, _)| *k)
-                        .unwrap_or_else(|| word.first().map(|(k, _)| *k).unwrap_or(Ink::Text));
-                    chars.push((ink, ' '));
+                    let face = chars.last().map(|(k, _)| *k).unwrap_or_else(|| {
+                        word.first()
+                            .map(|(k, _)| *k)
+                            .unwrap_or(Face::plain(Ink::Text))
+                    });
+                    chars.push((face, ' '));
                 }
                 chars.extend(word);
             }
-            let mut runs: Vec<(Ink, String)> = Vec::new();
-            for (ink, ch) in chars {
+            let mut runs: Vec<(Face, String)> = Vec::new();
+            for (face, ch) in chars {
                 match runs.last_mut() {
-                    Some((k, s)) if *k == ink => s.push(ch),
-                    _ => runs.push((ink, ch.to_string())),
+                    Some((k, s)) if *k == face => s.push(ch),
+                    _ => runs.push((face, ch.to_string())),
                 }
             }
             if runs.is_empty() {
-                runs.push((Ink::Text, String::new()));
+                runs.push((Face::plain(Ink::Text), String::new()));
             }
             out.push(runs);
         }
@@ -455,22 +497,22 @@ pub fn wrap_spans(spans: &[(Ink, &str)], max: usize) -> Vec<Vec<(Ink, String)>> 
     out
 }
 
-fn word_width(word: &[(Ink, char)]) -> usize {
+fn word_width(word: &[(Face, char)]) -> usize {
     word.iter().map(|(_, c)| char_width(*c)).sum()
 }
 
 /// Split a word into chunks each at most `max` display columns.
-fn split_word(word: &[(Ink, char)], max: usize) -> Vec<Vec<(Ink, char)>> {
+fn split_word(word: &[(Face, char)], max: usize) -> Vec<Vec<(Face, char)>> {
     let mut chunks = Vec::new();
     let mut cur = Vec::new();
     let mut w = 0usize;
-    for &(ink, ch) in word {
+    for &(face, ch) in word {
         let cw = char_width(ch);
         if w + cw > max && !cur.is_empty() {
             chunks.push(std::mem::take(&mut cur));
             w = 0;
         }
-        cur.push((ink, ch));
+        cur.push((face, ch));
         w += cw;
     }
     if !cur.is_empty() {
@@ -593,15 +635,21 @@ mod tests {
     }
 
     #[test]
-    fn wrap_spans_keeps_ink_across_wraps() {
-        let spans = vec![(Ink::Amber, "⚙ "), (Ink::Text, "hello world foo")];
+    fn wrap_spans_keeps_face_across_wraps() {
+        let spans = vec![
+            (Face::plain(Ink::Amber), "⚙ "),
+            (Face::plain(Ink::Text), "hello world foo"),
+        ];
         let lines = wrap_spans(&spans, 10);
         assert_eq!(lines.len(), 2);
         assert_eq!(
             lines[0],
-            vec![(Ink::Amber, "⚙ ".into()), (Ink::Text, "hello".into())]
+            vec![
+                (Face::plain(Ink::Amber), "⚙ ".into()),
+                (Face::plain(Ink::Text), "hello".into())
+            ]
         );
-        assert_eq!(lines[1], vec![(Ink::Text, "world foo".into())]);
+        assert_eq!(lines[1], vec![(Face::plain(Ink::Text), "world foo".into())]);
         // Every rendered line fits the width.
         for line in &lines {
             let painted: String = line.iter().map(|(_, s)| s.as_str()).collect();
@@ -611,7 +659,7 @@ mod tests {
 
     #[test]
     fn wrap_spans_splits_long_words_and_hard_breaks() {
-        let spans = vec![(Ink::Text, "abcdefghij\nklmnopqr")];
+        let spans = vec![(Face::plain(Ink::Text), "abcdefghij\nklmnopqr")];
         let lines = wrap_spans(&spans, 4);
         let texts: Vec<String> = lines
             .iter()
@@ -624,6 +672,30 @@ mod tests {
     fn wrap_spans_empty_is_one_empty_line() {
         let lines = wrap_spans(&[], 20);
         assert_eq!(lines.len(), 1);
-        assert_eq!(lines[0], vec![(Ink::Text, String::new())]);
+        assert_eq!(lines[0], vec![(Face::plain(Ink::Text), String::new())]);
+    }
+
+    #[test]
+    fn paint_face_bold_emits_sgr_and_ignores_width() {
+        let st = Style::truecolor(EMBER);
+        let bold = st.paint_face(Face::bold(Ink::Amber), "you> ");
+        assert!(bold.starts_with("\x1b[1;38;2;"), "no bold SGR: {bold:?}");
+        assert!(bold.ends_with("\x1b[0m"));
+        // Plain mode: no bytes at all, bold or not.
+        let pl = Style::plain();
+        assert_eq!(pl.paint_face(Face::bold(Ink::Amber), "you> "), "you> ");
+        // Ghost (native) mode: bold flag, 16-color code.
+        let native = Style {
+            mode: Mode::Native,
+            scheme: EMBER,
+        };
+        assert_eq!(
+            native.paint_face(Face::bold(Ink::Amber), "x"),
+            "\x1b[1;33mx\x1b[0m"
+        );
+        assert_eq!(
+            native.paint_face(Face::plain(Ink::Amber), "x"),
+            "\x1b[33mx\x1b[0m"
+        );
     }
 }

@@ -287,9 +287,16 @@ mod tests {
         assert!(win.contains(&("del", "Remove-Item")));
         assert!(ScriptDialect::Full.aliases().is_empty());
         // No alias may shadow a tool name or the call syntax.
-        for d in [ScriptDialect::Brief, ScriptDialect::Posix, ScriptDialect::Windows] {
+        for d in [
+            ScriptDialect::Brief,
+            ScriptDialect::Posix,
+            ScriptDialect::Windows,
+        ] {
             for (alias, _) in d.aliases() {
-                assert!(!alias.contains("FA"), "{alias} must not look like a tool name");
+                assert!(
+                    !alias.contains("FA"),
+                    "{alias} must not look like a tool name"
+                );
             }
         }
     }
@@ -330,7 +337,11 @@ mod tests {
         // No file -> default.
         assert_eq!(resolve_dialect(None, &dir).unwrap(), ScriptDialect::Full);
         // File -> file.
-        std::fs::write(dir.join("config").join("preferences.toml"), "dialect = \"posix\"\n").unwrap();
+        std::fs::write(
+            dir.join("config").join("preferences.toml"),
+            "dialect = \"posix\"\n",
+        )
+        .unwrap();
         assert_eq!(resolve_dialect(None, &dir).unwrap(), ScriptDialect::Posix);
         assert_eq!(read_user_dialect(&dir), Some(ScriptDialect::Posix));
         // Flag beats file.
@@ -341,7 +352,11 @@ mod tests {
         // Bad flag is loud.
         assert!(resolve_dialect(Some("bogus"), &dir).is_err());
         // Bad file value warns and falls back to default (never bricks start).
-        std::fs::write(dir.join("config").join("preferences.toml"), "dialect = \"bogus\"\n").unwrap();
+        std::fs::write(
+            dir.join("config").join("preferences.toml"),
+            "dialect = \"bogus\"\n",
+        )
+        .unwrap();
         assert_eq!(resolve_dialect(None, &dir).unwrap(), ScriptDialect::Full);
         assert_eq!(read_user_dialect(&dir), None);
         // Unparsable TOML likewise.

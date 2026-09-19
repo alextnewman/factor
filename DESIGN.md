@@ -855,6 +855,19 @@ transactional and the fallback is honest line mode.
   rendering (styled modal, plain gate, spill) — one hardened path.
 - **Resize.** Width/height are re-read on every render; reflow happens on
   the next key or server event (no explicit resize event).
+- **Chrome polish (2026-09-19).** The chrome gained semantic hierarchy,
+  not ornament. A `Face` (ink + bold flag) replaced bare `Ink` runs so
+  emphasis survives wrapping: bold action print forms (`⚙ Tree crates`),
+  bold `agent> ` (violet) / `you> ` (amber) role prefixes, bold uppercase
+  `APPROVAL REQUESTED` gate title, dim markdown fences, and a faint input
+  rule above the status bar (the interaction boundary, not decoration).
+  The full-screen chrome uses the real window width (`term_size_raw`) with
+  a 1-column defensive margin — a measured width and the terminal's true
+  width disagreed by a cell in the wild (a clipped scheme name). The top
+  bar's model/scheme side is never truncated: pressure shrinks the model
+  with a … first, then the session side, then the gap, and the session
+  vanishes entirely rather than pushing the scheme off. No decorative
+  borders were added; the gate keeps its border as the veto boundary.
 
 ## 7. Security model
 
