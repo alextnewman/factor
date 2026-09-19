@@ -301,10 +301,9 @@ fn term_size_os() -> Option<(usize, usize)> {
     None
 }
 
-/// Crude display width for box alignment: most chars are 1 cell; CJK and
-/// emoji-presentation ranges are 2. The sigils we use (⚙✓✗●◆◈▲⬡⚡) render
-/// 1 cell in Cascadia/Windows Terminal; terminals that disagree may misalign
-/// the gate frame by a cell — accepted for v1.
+/// Crude display width for box alignment: most chars are 1 cell; CJK,
+/// emoji-presentation ranges, and the ⚙/⚡ symbols are 2. The remaining
+/// sigils (✓✗●◆◈▲⬡) render 1 cell in Windows Terminal.
 pub fn disp_width(s: &str) -> usize {
     s.chars().map(char_width).sum()
 }
@@ -331,6 +330,13 @@ fn is_wide(c: char) -> bool {
         | '\u{FF00}'..='\u{FF60}'
         | '\u{FFE0}'..='\u{FFE6}'
         | '\u{1F000}'..='\u{1FAFF}'
+        // Emoji-presentation symbols we actually emit: ⚙ (U+2699) and
+        // ⚡ (U+26A1) render as 2-cell emoji in Windows Terminal despite
+        // being outside the 1F000 block. A 1-cell count here makes any
+        // row containing them exactly 1 cell too wide, pushing the
+        // gate frame's right border off-screen.
+        | '\u{2699}'
+        | '\u{26A1}'
     )
 }
 
@@ -608,7 +614,8 @@ mod tests {
     #[test]
     fn disp_width_counts_cjk_double() {
         assert_eq!(disp_width("ab"), 2);
-        assert_eq!(disp_width("⚙ x"), 3); // sigils count 1 here
+        assert_eq!(disp_width("⚙ x"), 4); // ⚙ is 2 cells (emoji presentation)
+        assert_eq!(disp_width("✓ x"), 3); // ✓ stays 1 cell
         assert_eq!(disp_width("中文"), 4);
     }
 

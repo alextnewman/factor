@@ -860,14 +860,16 @@ transactional and the fallback is honest line mode.
   even with the gate modal up (the modal's cached rows are keyed by
   terminal size, so the next render rebuilds them); it never dismisses
   the gate. Width/height are re-read on every render regardless.
-- **Gate frame (2026-09-19).** The gate frame is ASCII (`+`, `-`, `|`),
-  not box-drawing. Pixel measurement of a real terminal showed
-  box-drawing glyphs (`─ │ ┌ ┐ └ ┘ ╭ ╮ ╰ ╯`) rendering ~1 cell right of
-  text — a conspicuous gap on the frame's side that no byte-level fix
-  could address, because the emitted bytes were already correct
-  (`goto(0, …)`, no leading spaces). ASCII has no font-dependent metrics
-  and aligns everywhere. (An earlier "missing `╭`" diagnosis was wrong:
-  3x zoom showed the arcs rendered fine; the positioning was the bug.)
+- **Gate frame (2026-09-19).** The gate frame is rounded box-drawing
+  (`╭╮╰╯`, `─`, `│`) — the operator's terminal renders the arcs fine,
+  and the gate is the one box that earns a border. Two real-terminal
+  findings, in order: (1) an early "missing `╭`" diagnosis was wrong
+  (3x zoom showed the arcs rendered all along); the actual defect was
+  (2) `⚙` (U+2699) rendering as a 2-cell emoji in Windows Terminal
+  while `is_wide` counted it as 1 — every gate row containing a gear
+  was exactly 1 cell too wide, pushing the frame's right border
+  off-screen. `is_wide` now covers U+2699 and U+26A1 (⚡); a regression
+  test requires gate rows with wide sigils to be exactly `cols` cells.
 - **Chrome polish (2026-09-19).** The chrome gained semantic hierarchy,
   not ornament. A `Face` (ink + bold flag) replaced bare `Ink` runs so
   emphasis survives wrapping: bold action print forms (`⚙ Tree crates`),

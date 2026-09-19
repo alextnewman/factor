@@ -968,16 +968,14 @@ pub(crate) fn cap_gate_rows(
 pub(crate) fn gate_top(style: &Style, cols: usize) -> String {
     // Title knocked out of the top rule; the frame spans the full canvas.
     // (Char arithmetic, not byte length: every frame glyph is one cell.)
-    // ASCII frame, not box-drawing: real terminals were observed shifting
-    // box-drawing glyphs (─ │ ┌ ┐ └ ┘ ╭ ╮ ╰ ╯) ~1 cell right of text,
-    // leaving a conspicuous gap on the frame's side. ASCII +, -, | have
-    // no font-dependent metrics and align everywhere.
+    // Rounded corners: the operator's terminal renders them fine, and the
+    // gate is the one box that earns a border.
     let title = " APPROVAL REQUESTED ";
-    let fill = cols.saturating_sub(3 + title.len() + 1); // + - title -…- +
-    let mut top = String::from("+--");
+    let fill = cols.saturating_sub(3 + title.len() + 1); // ╭ ─ title ─…─ ╮
+    let mut top = String::from("╭─");
     top.push_str(title);
-    top.push_str(&"-".repeat(fill));
-    top.push('+');
+    top.push_str(&"─".repeat(fill));
+    top.push('╮');
     style.paint(Ink::Amber, &top).to_string()
 }
 
@@ -986,7 +984,7 @@ pub(crate) fn gate_bottom(style: &Style, cols: usize) -> String {
     style
         .paint(
             Ink::Amber,
-            &format!("+{}+", "-".repeat(cols.saturating_sub(2))),
+            &format!("╰{}╯", "─".repeat(cols.saturating_sub(2))),
         )
         .to_string()
 }
@@ -997,9 +995,9 @@ pub(crate) fn gate_row(style: &Style, face: Face, line: &str, cols: usize) -> St
     let pad = " ".repeat(inner_max.saturating_sub(style::disp_width(line)));
     format!(
         "{} {} {}",
-        style.paint(Ink::Amber, "|"),
+        style.paint(Ink::Amber, "│"),
         style.paint_face(face, &format!("{line}{pad}")),
-        style.paint(Ink::Amber, "|")
+        style.paint(Ink::Amber, "│")
     )
 }
 
@@ -1152,26 +1150,25 @@ mod tests {
     }
 
     #[test]
-    fn gate_frame_uses_ascii_for_font_independent_alignment() {
-        // Box-drawing glyphs (─ │ ┌ ┐ └ ┘ ╭ ╮ ╰ ╯) were observed rendering
-        // ~1 cell right of text in a real terminal font, leaving a
-        // conspicuous gap on the frame's side. ASCII +, -, | have no
-        // font-dependent metrics and align everywhere.
+    fn gate_frame_uses_rounded_corners() {
         let style = Style::plain();
         let top = gate_top(&style, 80);
         let bottom = gate_bottom(&style, 80);
-        let row = gate_row(&style, Face::plain(Ink::Text), "x", 80);
-        assert!(top.starts_with("+--"), "top-left corner: {top:?}");
-        assert!(top.ends_with('+'), "top-right corner: {top:?}");
-        assert!(bottom.starts_with('+'), "bottom-left corner: {bottom:?}");
-        assert!(bottom.ends_with('+'), "bottom-right corner: {bottom:?}");
-        assert!(row.starts_with("| "), "row left edge: {row:?}");
-        assert!(row.ends_with(" |"), "row right edge: {row:?}");
-        for s in [&top, &bottom, &row] {
-            assert!(
-                !s.chars().any(|c| "─│┌┐└┘╭╮╰╯".contains(c)),
-                "no box-drawing in frame: {s:?}"
-            );
+        assert!(top.starts_with("╭─"), "top-left corner: {top:?}");
+        assert!(top.ends_with("╮"), "top-right corner: {top:?}");
+        assert!(bottom.starts_with("╰"), "bottom-left corner: {bottom:?}");
+        assert!(bottom.ends_with("╯"), "bottom-right corner: {bottom:?}");
+    }
+
+    #[test]
+    fn gate_row_with_wide_sigil_never_exceeds_width() {
+        // ⚙ renders 2 cells in Windows Terminal. A row containing it must
+        // still be exactly `cols` cells wide, or the right border is
+        // pushed off-screen.
+        let style = Style::plain();
+        for line in ["⚙ Run gci -Recurse", "plain text", "✓ done ● trail"] {
+            let row = gate_row(&style, Face::plain(Ink::Text), line, 80);
+            assert_eq!(style::disp_width(&row), 80, "row: {row:?}");
         }
     }
 
